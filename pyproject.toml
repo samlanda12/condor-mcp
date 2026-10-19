@@ -1,0 +1,31 @@
+[project]
+name = "condor-mcp"
+version = "0.1.0"
+description = "MCP server that puts an HTCondor pool behind a natural-language interface"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=4",
+    "htcondor==25.13.*", # pinned to the pool's daemon version
+    "pydantic-settings>=2.15.0",
+]
+
+[project.scripts]
+condor-mcp = "condor_mcp.server:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "anyio>=4", "mypy>=1.14"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["condor_mcp"]
+
+[[tool.mypy.overrides]]
+# The HTCondor bindings ship no stubs or py.typed marker
+module = ["htcondor2", "classad2"]
+ignore_missing_imports = true
