@@ -12,7 +12,7 @@ from pydantic import Field
 
 from htcondor2 import JobStatus
 
-from condor_mcp import classads, pool
+from condor_mcp import classads, pool, submit
 from condor_mcp.classads import get
 from condor_mcp.pool import log, settings
 
@@ -223,6 +223,81 @@ def pool_status(
     if detail:
         out["slot_list"] = [classads.summarize_slot(ad, settings.slot_attrs) for ad in ads]
     log.info("  -> %d slots, %d/%d cpus free", len(ads), cpus["available"], cpus["total"])
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
+def draft_submit(
+    executable: Annotated[str, Field(description="Program or script to run.")],
+    arguments: Annotated[str, Field(description="Its command-line arguments. $(item) is the queue item, $(ProcId) the job number.")] = "",
+    input_files: Annotated[list[str] | None, Field(description="Files to copy to the execute machine before the job starts. $(item) stands for the queue item.")] = None,
+    output_files: Annotated[list[str] | None, Field(description="Files or directories to copy back when the job ends. Empty means every new file in the job's scratch directory.")] = None,
+    cpus: Annotated[int, Field(ge=1)] = 1,
+    memory_mb: Annotated[int, Field(ge=1)] = 1024,
+    disk_mb: Annotated[int | None, Field(ge=1, description="Scratch disk. Omit to let HTCondor estimate it.")] = None,
+    gpus: Annotated[int, Field(ge=0)] = 0,
+    queue: Annotated[int | list[str], Field(description="How many copies to queue, or a list of items to queue one job each for.")] = 1,
+    extra: Annotated[dict[str, str] | None, Field(description="Other submit commands, verbatim, such as {\"requirements\": \"HasAVX2\", \"+WantCloudBurst\": \"\\\"orangegrid-2026\\\"\"}. They come last and override the generated commands.")] = None,
+) -> dict[str, Any]:
+    """Turn a structured job description into an HTCondor submit file and check
+    it without queuing anything: the text is parsed, run through condor_submit's
+    dry run, and its requirements are matched against the pool's slots at full
+    size. Returns the submit text to show the user, how many jobs it would
+    queue, and warnings: a missing executable or input file, a typo in an extra
+    command, or a request no machine in the pool could ever satisfy. Use
+    queue=["a.csv", "b.csv"] with $(item) in arguments or input_files to run
+    one job per item. The job runs from the server's work directory; its log,
+    stdout and stderr land there named after the job id, and relative paths
+    are taken relative to it."""
+    log.info("draft_submit executable=%s queue=%s", executable, queue)
+    workdir = settings.workdir
+    executable = submit.resolve(executable, workdir)
+    input_files = [submit.resolve(f, workdir) for f in input_files or []]
+    text = submit.compose(
+        executable=executable, arguments=arguments, input_files=input_files,
+        output_files=output_files or [], cpus=cpus, memory_mb=memory_mb, disk_mb=disk_mb,
+        gpus=gpus, queue=queue, extra=extra or {}, workdir=workdir,
+    )
+    warnings = submit.check_files(executable, input_files, queue, workdir)
+    out: dict[str, Any] = {
+        "submit_text": text,
+        "work_dir": str(workdir),
+        "jobs": 0,
+        "submittable": False,
+        "requirements": None,
+        "slots": None,
+        "warnings": warnings,
+    }
+    if problem := submit.parse(text):
+        warnings.append(problem)
+        return out
+    ads, messages = submit.dry_run(text)
+    warnings.extend(messages)
+    if not ads:
+        return out
+    out["jobs"] = len(ads)
+    out["submittable"] = True
+    out["requirements"] = str(ads[0].get("Requirements"))
+    try:
+        slots = submit.slot_check(ads[0])
+    except ToolError as exc:
+        warnings.append(f"Could not check the requirements against the pool: {exc}")
+        return out
+    out["slots"] = slots
+    big = slots["largest_slot"]
+    if slots["fit_requirements"] == 0:
+        warnings.append(
+            "No slot in the pool satisfies the job's requirements, even when empty. The "
+            f"job asks for {cpus} CPUs, {memory_mb} MB and {gpus} GPUs; the largest slot "
+            f"has {big['cpus']} CPUs, {big['memory_mb']} MB and {big['gpus']} GPUs. "
+            "Check the requirements line too."
+        )
+    elif slots["would_accept"] == 0:
+        warnings.append(
+            f"{slots['fit_requirements']} slots satisfy the job's requirements but none "
+            "would accept it under its own START policy, likely because the dry-run ad has no Owner."
+        )
+    log.info("  -> %d jobs, %d warnings", out["jobs"], len(warnings))
     return out
 
 

@@ -2,16 +2,37 @@
 
 Submits one job that runs (sleep) and one that goes on hold (missing input
 file, hold code 13), waits for both states, and removes them afterwards.
-Only jobs tagged CondorMcpTest are touched."""
+Only jobs tagged CondorMcpTest are touched. Drafted jobs use a work directory under
+the system temp dir."""
 
 from __future__ import annotations
 
+import os
+import tempfile
 import time
+from pathlib import Path
+from typing import Any
 
 import htcondor2 as htcondor
 import pytest
 
 TAG = "CondorMcpTest"
+
+# Drafted jobs run from here. Set before the server reads its settings, overriding
+# any value in the shell so the tests and the server agree on the directory.
+WORKDIR = Path(tempfile.gettempdir()) / "condor-mcp-tests"
+WORKDIR.mkdir(exist_ok=True)
+os.environ["CONDOR_MCP_WORKDIR"] = str(WORKDIR)
+
+
+async def call(name: str, **args: Any) -> Any:
+    """Call one tool through FastMCP's in-memory client and return its data."""
+    from fastmcp import Client
+
+    from condor_mcp.server import mcp
+
+    async with Client(mcp) as client:
+        return (await client.call_tool(name, args)).data
 
 
 @pytest.fixture(scope="session")

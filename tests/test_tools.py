@@ -9,21 +9,17 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from condor_mcp.server import mcp
+from conftest import call
 
 pytestmark = pytest.mark.anyio
 ME = getpass.getuser()
 NOBODY = "condor-mcp-nobody"
 
 
-async def call(name: str, **args):
-    async with Client(mcp) as client:
-        return (await client.call_tool(name, args)).data
-
-
 async def test_all_tools_are_read_only():
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
-    assert set(tools) == {"job_details", "list_jobs", "hold_reasons", "pool_status"}
+    assert set(tools) == {"job_details", "list_jobs", "hold_reasons", "pool_status", "draft_submit"}
     for tool in tools.values():
         assert tool.annotations.read_only_hint is True, tool.name
 

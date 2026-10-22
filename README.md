@@ -59,8 +59,9 @@ Other clients take the same command and args in their own config format. Put any
 
 ## Tools
 
-All of these are read-only. Jobs that have finished and left the queue are invisible
-to them; job history comes in a later stage.
+All of these are read-only: `draft_submit` writes nothing and contacts no schedd. Jobs
+that have finished and left the queue are invisible to them; job history comes in a
+later stage.
 
 | Tool | What it answers |
 | --- | --- |
@@ -68,11 +69,12 @@ to them; job history comes in a later stage.
 | `list_jobs(owner="me", status=None, limit=50)` | One line per job plus a count of the owner's jobs by status. `owner` is `me`, `all`, or a username. |
 | `hold_reasons(owner="me")` | Every held job with HTCondor's message, the hold code, what the code means, and a tally by code. |
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
+| `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
 
 Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
 holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows
-where the pool is and wraps connection errors, [server.py](condor_mcp/server.py) defines the
-tools.
+where the pool is and wraps connection errors, [submit.py](condor_mcp/submit.py) builds
+and checks submit files, [server.py](condor_mcp/server.py) defines the tools.
 
 ## Configuration
 
@@ -89,6 +91,7 @@ read once at startup, and an empty value is the same as unset.
 | `CONDOR_MCP_JOB_ATTRS` | none | Extra job attributes to return, comma-separated. |
 | `CONDOR_MCP_SLOT_ATTRS` | none | Extra slot attributes to return from `pool_status(detail=True)`, comma-separated. |
 | `CONDOR_MCP_CALL_LOG` | off | File to log each tool call to. Handy during a demo. |
+| `CONDOR_MCP_WORKDIR` | `~/condor-mcp-jobs` | Where drafted jobs run from (their `initialdir`) and where their log, stdout and stderr land, named after the job id. Relative paths in a draft are taken relative to it. |
 
 GPU attributes are always fetched. On a pool without GPUs they come back empty, which is
 expected.
@@ -97,8 +100,9 @@ expected.
 
 The tests run against a live pool and need permission to submit. They submit a sleep job
 and a job that goes on hold with a missing input file, wait for both, check every tool,
-and remove only the jobs they submitted (tagged `CondorMcpTest`). Don't run them against
-a production schedd you don't own. They also assume a small development pool: a single
+and remove only the jobs they submitted (tagged `CondorMcpTest`). Drafts use a work
+directory under the system temp dir. Don't run them against a production schedd you
+don't own. They also assume a small development pool: a single
 execute machine with no GPUs, as in the container below. On a bigger pool the server
 works but the `pool_status` tests fail.
 
