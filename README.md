@@ -99,7 +99,7 @@ read once at startup, and an empty value is the same as unset.
 | `CONDOR_MCP_JOB_ATTRS` | none | Extra job attributes to return, comma-separated. |
 | `CONDOR_MCP_SLOT_ATTRS` | none | Extra slot attributes to return from `pool_status(detail=True)`, comma-separated. |
 | `CONDOR_MCP_CALL_LOG` | off | File to log each tool call to. Handy during a demo. |
-| `CONDOR_MCP_WORKDIR` | `~/condor-mcp-jobs` | Where drafted jobs run from (their `initialdir`) and where their log, stdout and stderr land, named after the job id. Relative paths in a draft are taken relative to it. |
+| `CONDOR_MCP_WORKDIR` | `~/condor-mcp-jobs` | Where drafted jobs run from (their `initialdir`) and where their log, stdout and stderr land, named after the job id. Relative paths in a draft are taken relative to it. Created at startup if missing. |
 
 GPU attributes are always fetched. On a pool without GPUs they come back empty, which is
 expected.

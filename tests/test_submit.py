@@ -4,6 +4,9 @@ anything, and it removes what it queued."""
 from __future__ import annotations
 
 import getpass
+import os
+import subprocess
+import sys
 
 import htcondor2 as htcondor
 import pytest
@@ -60,6 +63,14 @@ async def test_draft_queue_over_items_checks_each_input(tmp_path):
     assert len(out["warnings"]) == 1
     assert "missing.csv" in out["warnings"][0] and str(present) not in out["warnings"][0]
     assert "hold" in out["warnings"][0]
+
+
+def test_workdir_is_created_at_startup(tmp_path):
+    """A fresh process, since conftest already created the test workdir."""
+    new = tmp_path / "jobs" / "nested"
+    env = os.environ | {"CONDOR_MCP_WORKDIR": str(new)}
+    subprocess.run([sys.executable, "-c", "import condor_mcp.pool"], env=env, check=True, timeout=60)
+    assert new.is_dir()
 
 
 async def test_draft_missing_executable():

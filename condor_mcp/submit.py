@@ -106,8 +106,8 @@ def check_files(
     warnings: list[str] = []
     if not workdir.is_dir():
         warnings.append(
-            f"The work directory {workdir} does not exist. Create it before submitting; "
-            "the job's log, stdout and stderr go there."
+            f"The work directory {workdir} does not exist and the server could not create "
+            "it at startup. Create it before submitting; the job's log, stdout and stderr go there."
         )
     if "$(" not in executable:
         if not os.path.isfile(executable):

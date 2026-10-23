@@ -67,6 +67,14 @@ if settings.call_log:
     log.addHandler(_handler)
     log.setLevel(logging.INFO)
 
+# condor_submit refuses a job whose initialdir is missing, and drafts set it to the
+# work directory, so make it now rather than on the first submit. A failure is
+# left to the tools to report: draft_submit warns and submit_job refuses.
+try:
+    settings.workdir.mkdir(parents=True, exist_ok=True)
+except OSError as _exc:
+    log.warning("could not create the work directory %s: %s", settings.workdir, _exc)
+
 
 def collector() -> htcondor.Collector:
     return htcondor.Collector(settings.collector)
