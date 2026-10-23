@@ -59,9 +59,8 @@ Other clients take the same command and args in their own config format. Put any
 
 ## Tools
 
-All of these are read-only: `draft_submit` writes nothing and contacts no schedd. Jobs
-that have finished and left the queue are invisible to them; job history comes in a
-later stage.
+Jobs that have finished and left the queue are invisible to these tools; job history
+comes in a later stage.
 
 | Tool | What it answers |
 | --- | --- |
@@ -70,6 +69,15 @@ later stage.
 | `hold_reasons(owner="me")` | Every held job with HTCondor's message, the hold code, what the code means, and a tally by code. |
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
 | `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
+| `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Returns the cluster id, job count, and one `list_jobs` row per job. |
+
+### Read-only and write tools
+
+Every tool except `submit_job` is read-only: `draft_submit` writes nothing and contacts
+no schedd. `submit_job` queues jobs as the user the server runs as, and is marked
+non-read-only in its MCP annotations so clients can ask the user before calling it. It
+refuses `include` lines, which read files or run a shell command at submit time, and
+`queue ... |` statements, which run one. It never touches jobs already in the queue.
 
 Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
 holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows
@@ -100,8 +108,9 @@ expected.
 
 The tests run against a live pool and need permission to submit. They submit a sleep job
 and a job that goes on hold with a missing input file, wait for both, check every tool,
-and remove only the jobs they submitted (tagged `CondorMcpTest`). Drafts use a work
-directory under the system temp dir. Don't run them against a production schedd you
+queue a third through `draft_submit` and `submit_job`, and remove only the jobs they
+submitted (tagged `CondorMcpTest`). Drafts and submitted jobs use a work directory
+under the system temp dir. Don't run them against a production schedd you
 don't own. They also assume a small development pool: a single
 execute machine with no GPUs, as in the container below. On a bigger pool the server
 works but the `pool_status` tests fail.

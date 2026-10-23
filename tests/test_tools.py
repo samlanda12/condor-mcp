@@ -16,12 +16,16 @@ ME = getpass.getuser()
 NOBODY = "condor-mcp-nobody"
 
 
-async def test_all_tools_are_read_only():
+async def test_tool_annotations_split():
+    """Clients use the annotations to decide what to confirm with the user."""
+    read_only = {"job_details", "list_jobs", "hold_reasons", "pool_status", "draft_submit"}
+    write = {"submit_job"}
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
-    assert set(tools) == {"job_details", "list_jobs", "hold_reasons", "pool_status", "draft_submit"}
-    for tool in tools.values():
-        assert tool.annotations.read_only_hint is True, tool.name
+    assert set(tools) == read_only | write
+    for name, tool in tools.items():
+        assert tool.annotations.read_only_hint is (name in read_only), name
+        assert tool.annotations.destructive_hint is not True, name
 
 
 async def test_job_details_running(live_jobs):

@@ -2,8 +2,9 @@
 
 Submits one job that runs (sleep) and one that goes on hold (missing input
 file, hold code 13), waits for both states, and removes them afterwards.
-Only jobs tagged CondorMcpTest are touched. Drafted jobs use a work directory under
-the system temp dir."""
+A third job is drafted and queued through the submit tools. Only jobs tagged
+CondorMcpTest are touched. Drafted jobs use a work directory under the system
+temp dir."""
 
 from __future__ import annotations
 
@@ -69,3 +70,18 @@ def live_jobs():
         yield {"running": running, "held": held}
     finally:
         schedd.act(htcondor.JobAction.Remove, f"{TAG} == true")
+
+
+@pytest.fixture(scope="session")
+async def submitted_job(anyio_backend):
+    """A sleep job drafted with draft_submit and queued with submit_job."""
+    draft = await call(
+        "draft_submit", executable="/bin/sleep", arguments="600", memory_mb=64, disk_mb=10,
+        extra={f"+{TAG}": "true"},
+    )
+    assert draft["submittable"] and draft["warnings"] == [], draft
+    out = await call("submit_job", submit_text=draft["submit_text"])
+    try:
+        yield {"cluster": out["cluster_id"], "submit_text": draft["submit_text"], "result": out}
+    finally:
+        htcondor.Schedd().act(htcondor.JobAction.Remove, f"ClusterId == {out['cluster_id']}")

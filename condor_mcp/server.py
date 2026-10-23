@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+import htcondor2 as htcondor
 from htcondor2 import JobStatus
 
 from condor_mcp import classads, pool, submit
@@ -19,6 +20,8 @@ from condor_mcp.pool import log, settings
 mcp = FastMCP("condor-mcp")
 
 READ_ONLY = {"readOnlyHint": True, "idempotentHint": True}
+# Changes the queue; a client should confirm with the user before calling.
+WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 
 JobStatusName = Literal[
     "idle", "running", "held", "completed", "removed", "suspended", "transferring_output"
@@ -298,6 +301,69 @@ def draft_submit(
             "would accept it under its own START policy, likely because the dry-run ad has no Owner."
         )
     log.info("  -> %d jobs, %d warnings", out["jobs"], len(warnings))
+    return out
+
+
+@mcp.tool(annotations=WRITE, tags={"jobs", "write"})
+def submit_job(
+    submit_text: Annotated[str | None, Field(description="A complete submit description, such as the submit_text from draft_submit once the user has approved it.")] = None,
+    submit_file: Annotated[str | None, Field(description="Instead of text: the path of a submit file on the submit host. Its relative paths are taken relative to its own directory.")] = None,
+    dry_run: Annotated[bool, Field(description="Queue nothing; return the job ads HTCondor would create.")] = False,
+) -> dict[str, Any]:
+    """Queue jobs from a submit description, given as text or as the path of a
+    submit file on the submit host. Jobs run as the user this server runs as.
+    The description first goes through condor_submit's dry run and is refused
+    if that reports an error. With dry_run=True nothing is queued and the
+    generated job ads come back instead, one row per job. include lines and
+    queue statements that run a command are refused. Returns the cluster id,
+    the number of jobs, and one list_jobs row per job; follow a job with
+    job_details."""
+    log.info("submit_job file=%s dry_run=%s text=%s", submit_file, dry_run, submit_text is not None)
+    text, file_dir = submit.load(submit_text, submit_file)
+    if reason := submit.runs_commands(text):
+        raise ToolError(f"Refusing to submit: {reason}")
+    if problem := submit.parse(text):
+        raise ToolError(problem)
+    description = htcondor.Submit(text)
+    if file_dir is None:
+        try:
+            settings.workdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ToolError(f"Could not create the work directory {settings.workdir}: {exc}") from exc
+    default_dir = file_dir or settings.workdir
+    base = submit.prepare(description, default_dir)
+    # The original text still has a relative initialdir, so run from where condor_submit would.
+    ads, warnings = submit.dry_run(text, cwd=default_dir)
+    errors = [m for m in warnings if m.startswith("ERROR")]
+    if errors or not ads:
+        reported = " ".join(errors or warnings) or "no job ads"
+        raise ToolError(f"Refusing to submit, condor_submit reported: {reported}")
+    if dry_run:
+        rows = [submit.dry_run_row(ad) for ad in submit.complete_ads(ads)]
+        log.info("  -> dry run, %d jobs", len(rows))
+        return {"dry_run": True, "jobs": len(rows), "submit_dir": str(base), "job_ads": rows, "warnings": warnings}
+
+    name, schedd = next(pool.schedds())
+    try:
+        result = schedd.submit(description)
+    except (htcondor.HTCondorException, RuntimeError) as exc:
+        raise ToolError(f"The schedd ({name}) refused the submit: {exc}") from exc
+    cluster = result.cluster()
+    try:
+        queued = schedd.query(f"ClusterId == {cluster}", projection=classads.JOB_LIST_PROJECTION)
+    except htcondor.HTCondorException as exc:
+        raise ToolError(f"Submitted cluster {cluster} but could not read it back: {exc}") from exc
+    queued.sort(key=lambda ad: get(ad, "ProcId", 0))
+    out: dict[str, Any] = {
+        "cluster_id": cluster,
+        "jobs": result.num_procs(),
+        "submit_dir": str(base),
+        "job_list": [classads.compact_job(ad) for ad in queued],
+        "warnings": warnings,
+    }
+    if pool.multi_schedd():
+        out["schedd"] = name
+    log.info("  -> cluster %d, %d jobs", cluster, result.num_procs())
     return out
 
 
