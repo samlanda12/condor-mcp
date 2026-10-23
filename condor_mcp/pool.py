@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import getpass
 import logging
+from pathlib import Path
 from typing import Annotated, Any, Iterator
 
 import classad2 as classad
@@ -41,6 +42,9 @@ class Settings(BaseSettings):
     slot_attrs: CsvList = []
     # Append one line per tool call to this file; empty = off.
     call_log: str | None = None
+    # Where drafted jobs run from (their initialdir) and where their log,
+    # stdout and stderr land.
+    workdir: Path = Field(default_factory=lambda: Path.home() / "condor-mcp-jobs")
 
     @field_validator("schedds", "job_attrs", "slot_attrs", mode="before")
     @classmethod
@@ -48,6 +52,11 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [v.strip() for v in value.split(",") if v.strip()]
         return value
+
+    @field_validator("workdir", mode="before")
+    @classmethod
+    def _absolute(cls, value: Any) -> Any:
+        return Path(value).expanduser().absolute() if isinstance(value, (str, Path)) else value
 
 
 settings = Settings()
@@ -57,6 +66,14 @@ if settings.call_log:
     _handler.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
     log.addHandler(_handler)
     log.setLevel(logging.INFO)
+
+# condor_submit refuses a job whose initialdir is missing, and drafts set it to the
+# work directory, so make it now rather than on the first submit. A failure is
+# left to the tools to report: draft_submit warns and submit_job refuses.
+try:
+    settings.workdir.mkdir(parents=True, exist_ok=True)
+except OSError as _exc:
+    log.warning("could not create the work directory %s: %s", settings.workdir, _exc)
 
 
 def collector() -> htcondor.Collector:
