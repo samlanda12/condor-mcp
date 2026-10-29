@@ -36,6 +36,14 @@ def _job_projection(base: list[str]) -> list[str]:
     return base + [a for a in settings.job_attrs if a not in base]
 
 
+def _no_slots() -> str:
+    return (
+        "The collector returned no slots. Either no execute machines are "
+        "reporting or the slot filter (CONDOR_MCP_SLOT_CONSTRAINT = "
+        f"{settings.slot_constraint!r}) excludes everything."
+    )
+
+
 @mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
 def job_details(
     cluster_id: Annotated[int, Field(ge=1, description="Cluster number, the part before the dot in 123.0")],
@@ -170,11 +178,7 @@ def pool_status(
     ]
     ads = pool.query_slots(projection)
     if not ads:
-        raise ToolError(
-            "The collector returned no slots. Either no execute machines are "
-            "reporting or the slot filter (CONDOR_MCP_SLOT_CONSTRAINT = "
-            f"{settings.slot_constraint!r}) excludes everything."
-        )
+        raise ToolError(_no_slots())
 
     by_state: Counter[str] = Counter()
     machines: set[str] = set()
@@ -290,12 +294,15 @@ def draft_submit(
         return out
     out["slots"] = slots
     big = slots["largest_slot"]
-    if slots["fit_requirements"] == 0:
+    if slots["slots"] == 0:
+        warnings.append(f"Could not check the requirements against the pool: {_no_slots()}")
+    elif slots["fit_requirements"] == 0:
+        ad = ads[0]  # the effective requests, since extra can override the arguments
         warnings.append(
             "No slot in the pool satisfies the job's requirements, even when empty. The "
-            f"job asks for {cpus} CPUs, {memory_mb} MB and {gpus} GPUs; the largest slot "
-            f"has {big['cpus']} CPUs, {big['memory_mb']} MB and {big['gpus']} GPUs. "
-            "Check the requirements line too."
+            f"job asks for {get(ad, 'RequestCpus')} CPUs, {get(ad, 'RequestMemory')} MB and "
+            f"{get(ad, 'RequestGPUs', 0)} GPUs; no slot has more than {big['cpus']} CPUs, "
+            f"{big['memory_mb']} MB or {big['gpus']} GPUs. Check the requirements line too."
         )
     elif slots["would_accept"] == 0:
         warnings.append(

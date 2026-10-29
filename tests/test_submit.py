@@ -93,12 +93,28 @@ async def test_draft_typo_in_extra():
 
 
 async def test_draft_impossible_request():
-    out = await call("draft_submit", executable="/bin/sleep", gpus=1, memory_mb=64)
+    out = await call(
+        "draft_submit", executable="/bin/sleep", gpus=1, memory_mb=64,
+        extra={"request_memory": "512GB"},
+    )
     assert "request_gpus            = 1" in out["submit_text"]
     assert out["submittable"] is True
     assert "TARGET.GPUs >= RequestGPUs" in out["requirements"]
     assert out["slots"]["fit_requirements"] == 0  # the dev pool has no GPUs
-    assert any("No slot" in w and "1 GPUs" in w for w in out["warnings"])
+    (warning,) = [w for w in out["warnings"] if "No slot" in w]
+    assert "524288 MB and 1 GPUs" in warning  # what extra set, not memory_mb
+
+
+async def test_draft_with_empty_pool(monkeypatch):
+    from condor_mcp import pool, server
+
+    narrowed = pool.settings.model_copy(update={"slot_constraint": "False"})
+    monkeypatch.setattr(pool, "settings", narrowed)
+    monkeypatch.setattr(server, "settings", narrowed)
+    out = await call("draft_submit", executable="/bin/sleep", memory_mb=64)
+    assert out["submittable"] is True and out["slots"]["slots"] == 0
+    (warning,) = out["warnings"]
+    assert "collector returned no slots" in warning and "'False'" in warning
 
 
 async def test_draft_bad_expression():
