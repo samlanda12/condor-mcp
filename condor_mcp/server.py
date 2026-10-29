@@ -195,9 +195,8 @@ def pool_status(
             continue  # its resources are accounted for through the parent slot
         unclaimed = get(ad, "State") == "Unclaimed"
         partitionable = bool(get(ad, "PartitionableSlot", False))
-        total_c = int(get(ad, "TotalSlotCpus", get(ad, "Cpus", 0)) or 0)
-        total_m = int(get(ad, "TotalSlotMemory", get(ad, "Memory", 0)) or 0)
-        total_g = int(get(ad, "TotalSlotGPUs", get(ad, "GPUs", 0)) or 0)
+        totals = classads.slot_totals(ad)
+        total_c, total_m, total_g = totals["Cpus"], totals["Memory"], totals["GPUs"]
         # A partitionable slot's own Cpus/Memory/GPUs are what is left after its
         # dynamic children took theirs. A static slot is all-or-nothing.
         free_c = int(get(ad, "Cpus", 0) or 0) if (partitionable or unclaimed) else 0

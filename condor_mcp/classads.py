@@ -132,6 +132,34 @@ def split_files(value: Any) -> list[str]:
     return [f.strip() for f in str(value).split(",") if f.strip()]
 
 
+def requested(ad: classad.ClassAd) -> dict[str, Any]:
+    """What a job asked for, in HTCondor's units."""
+    return {
+        "cpus": get(ad, "RequestCpus"),
+        "memory_mb": get(ad, "RequestMemory"),
+        "disk_kb": get(ad, "RequestDisk"),
+        "gpus": get(ad, "RequestGPUs", 0),
+    }
+
+
+def job_files(ad: classad.ClassAd) -> dict[str, Any]:
+    return {
+        "stdout": get(ad, "Out"),
+        "stderr": get(ad, "Err"),
+        "log": get(ad, "UserLog"),
+        "transfer_input": split_files(get(ad, "TransferInput")),
+    }
+
+
+SLOT_RESOURCES = ("Cpus", "Memory", "Disk", "GPUs")
+
+
+def slot_totals(ad: classad.ClassAd) -> dict[str, int]:
+    """A slot's full size by resource, whether it is partitionable (TotalSlotX)
+    or static (X). Site attribute names differ, so this is the one place to adapt."""
+    return {res: int(get(ad, f"TotalSlot{res}", get(ad, res, 0)) or 0) for res in SLOT_RESOURCES}
+
+
 def site_attrs(ad: classad.ClassAd, attrs: Iterable[str]) -> dict[str, Any]:
     return {attr: get(ad, attr) for attr in attrs}
 
@@ -158,22 +186,13 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
         "submitted_at": ts(get(ad, "QDate")),
         "started_at": ts(get(ad, "JobStartDate")),
         "running_on": get(ad, "RemoteHost"),
-        "requested": {
-            "cpus": get(ad, "RequestCpus"),
-            "memory_mb": get(ad, "RequestMemory"),
-            "disk_kb": get(ad, "RequestDisk"),
-        },
+        "requested": requested(ad),
         "usage": {
             "memory_mb": get(ad, "MemoryUsage"),
             "wall_clock_s": get(ad, "RemoteWallClockTime"),
             "starts": get(ad, "NumJobStarts", 0),
         },
-        "files": {
-            "stdout": get(ad, "Out"),
-            "stderr": get(ad, "Err"),
-            "log": get(ad, "UserLog"),
-            "transfer_input": split_files(get(ad, "TransferInput")),
-        },
+        "files": job_files(ad),
     }
     if status_code == JobStatus.HELD:
         out["hold"] = hold_info(ad)

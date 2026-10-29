@@ -24,7 +24,6 @@ from condor_mcp import classads, pool
 from condor_mcp.classads import get
 
 ITEM = "$(item)"
-RESOURCES = ("Cpus", "Memory", "Disk", "GPUs")
 # A submit command or a +Attribute. See compose() for why keys are restricted.
 COMMAND = re.compile(r"\+?[A-Za-z_][A-Za-z0-9_.]*")
 # condor_submit joins a line ending in a backslash (trailing blanks allowed) with the next, keyword included.
@@ -265,18 +264,8 @@ def dry_run_row(ad: classad.ClassAd) -> dict[str, Any]:
         "proc": get(ad, "ProcId"),
         "command": classads.command_line(ad),
         "submit_dir": get(ad, "Iwd"),
-        "requested": {
-            "cpus": get(ad, "RequestCpus"),
-            "memory_mb": get(ad, "RequestMemory"),
-            "disk_kb": get(ad, "RequestDisk"),
-            "gpus": get(ad, "RequestGPUs", 0),
-        },
-        "files": {
-            "stdout": get(ad, "Out"),
-            "stderr": get(ad, "Err"),
-            "log": get(ad, "UserLog"),
-            "transfer_input": classads.split_files(get(ad, "TransferInput")),
-        },
+        "requested": classads.requested(ad),
+        "files": classads.job_files(ad),
         "requirements": str(ad.get("Requirements")),
     }
 
@@ -285,14 +274,14 @@ def slot_check(job: classad.ClassAd) -> dict[str, Any]:
     """Match the job against every non-dynamic slot sized to its total resources.
     fit_requirements: slots the job's Requirements accept. would_accept: those
     whose START also accepts the job."""
-    slots = [ad for ad in pool.query_slots([]) if not get(ad, "DynamicSlot", False)]
+    slots = pool.query_slots([], constraint="DynamicSlot =!= true")
     fit = accept = 0
-    largest = dict.fromkeys(RESOURCES, 0)
+    largest = dict.fromkeys(classads.SLOT_RESOURCES, 0)
     for slot in slots:
-        for res in RESOURCES:
-            total = int(get(slot, f"TotalSlot{res}", get(slot, res, 0)) or 0)
-            slot[res] = total
+        totals = classads.slot_totals(slot)
+        for res, total in totals.items():
             largest[res] = max(largest[res], total)
+        slot.update(totals)  # sized in place; the ads are private to this call
         if slot.matches(job):
             fit += 1
             if job.matches(slot):
