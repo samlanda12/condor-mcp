@@ -118,11 +118,16 @@ async def test_draft_bad_expression():
         {"arguments": "1\ninclude : touch /tmp/condor-mcp-pwned |"},
         {"input_files": ["a\ninclude : touch /tmp/condor-mcp-pwned |"]},
         {"queue": ["a", ")\nqueue item from touch /tmp/condor-mcp-pwned |\n#"]},
+        {"queue": [")", "queue item from touch /tmp/condor-mcp-pwned |"]},
+        {"queue": ["a", " "]},
+        {"queue": ["# a"]},
+        {"extra": {"requirements\n": "true"}},
     ],
 )
 async def test_draft_rejects_second_statement(args):
-    with pytest.raises(ToolError, match="one line|not a submit command"):
+    with pytest.raises(ToolError, match="one line|not a submit command|not accepted"):
         await call("draft_submit", executable="/bin/sleep", **args)
+    assert not os.path.exists("/tmp/condor-mcp-pwned")
 
 
 async def test_submit_dry_run_of_draft(submitted_job):
@@ -208,11 +213,28 @@ async def test_submit_refuses_missing_initialdir():
         "include : /etc/hostname\nexecutable = /bin/sleep\nqueue 1\n",
         "executable = /bin/sleep\nINCLUDE command : touch /tmp/condor-mcp-should-not-exist |\nqueue 1\n",
         "executable = /bin/sleep\nqueue item from touch /tmp/condor-mcp-should-not-exist |\n",
+        "executable = /bin/sleep\nqueue item from \\\n  touch /tmp/condor-mcp-should-not-exist |\n",
+        "executable = /bin/sleep\nCMD = touch /tmp/condor-mcp-should-not-exist |\nqueue item from $(CMD)\n",
+        "executable = /bin/sleep\nincl\\\nude : touch /tmp/condor-mcp-should-not-exist |\nqueue 1\n",
+        "executable = /bin/sleep\nincl\\   \nude : touch /tmp/condor-mcp-should-not-exist |\nqueue 1\n",
+        "executable = /bin/sleep\nqueue item from (\n    )\n    queue item from touch /tmp/condor-mcp-should-not-exist |\n)\n",
     ],
 )
 async def test_submit_refuses_command_statements(text):
-    with pytest.raises(ToolError, match="lines are not accepted"):
+    with pytest.raises(ToolError, match="not accepted"):
         await call("submit_job", submit_text=text)
+    assert not os.path.exists("/tmp/condor-mcp-should-not-exist")
+
+
+async def test_submit_allows_queue_from_file_and_inline_list(tmp_path):
+    (tmp_path / "items.txt").write_text("a\nb\n")
+    sub = tmp_path / "job.sub"
+    sub.write_text(f"executable = /bin/sleep\narguments = $(item)\n+{TAG} = true\nqueue item from items.txt\n")
+    out = await call("submit_job", submit_file=str(sub), dry_run=True)
+    assert [row["command"] for row in out["job_ads"]] == ["/bin/sleep a", "/bin/sleep b"]
+    text = f"executable = /bin/sleep\narguments = $(item)\n+{TAG} = true\nqueue item in (a, b)\n"
+    out = await call("submit_job", submit_text=text, dry_run=True)
+    assert [row["command"] for row in out["job_ads"]] == ["/bin/sleep a", "/bin/sleep b"]
 
 
 async def test_submit_allows_macro_named_like_include():

@@ -26,7 +26,9 @@ from condor_mcp.classads import get
 ITEM = "$(item)"
 RESOURCES = ("Cpus", "Memory", "Disk", "GPUs")
 # A submit command or a +Attribute. See compose() for why keys are restricted.
-COMMAND = re.compile(r"^\+?[A-Za-z_][A-Za-z0-9_.]*$")
+COMMAND = re.compile(r"\+?[A-Za-z_][A-Za-z0-9_.]*")
+# condor_submit joins a line ending in a backslash (trailing blanks allowed) with the next, keyword included.
+CONTINUATION = re.compile(r"\\\s*\n\s*")
 
 
 def _multiline(value: str) -> bool:
@@ -58,7 +60,8 @@ def compose(
     """Extra commands go last so they override: HTCondor keeps the last setting.
 
     Every value is held to one line and every key to a command name, so no field
-    can sneak in a second statement."""
+    can sneak in a second statement, and no queue item may close the item list,
+    since condor_submit reads whatever follows as further statements."""
     lines: list[tuple[str, str]] = [("executable", executable)]
     if arguments:
         lines.append(("arguments", arguments))
@@ -84,12 +87,18 @@ def compose(
     ]
     lines += list(extra.items())
     for key, value in lines:
-        if not COMMAND.match(key):
+        if not COMMAND.fullmatch(key):
             raise ToolError(f"extra command {key!r} is not a submit command name or +Attribute.")
         if _multiline(value):
             raise ToolError(f"{key} must be one line.")
-    if not isinstance(queue, int) and any(_multiline(item) for item in queue):
-        raise ToolError("Each queue item must be one line.")
+    for item in [] if isinstance(queue, int) else queue:
+        if _multiline(item):
+            raise ToolError("Each queue item must be one line.")
+        if not item.strip() or item.strip()[0] in ")#":
+            raise ToolError(
+                f"Queue item {item!r} is not accepted: an empty item or one starting with "
+                "')' or '#' would end the item list early or be read as a comment."
+            )
     width = max(len(key) for key, _ in lines)
     text = "".join(f"{key.ljust(width)} = {value}\n" for key, value in lines)
     if isinstance(queue, int):
@@ -139,15 +148,25 @@ def parse(text: str) -> str | None:
 
 
 def runs_commands(text: str) -> str | None:
-    """Why the text is refused, or None. include lines and queue ... | lines
-    make condor_submit read files or run commands as the server's user."""
-    for raw in text.splitlines():
+    """Why the text is refused, or None. include lines and queue ... | statements
+    make condor_submit read files or run commands as the server's user. Runs
+    before any parse, since htcondor.Submit() itself processes include lines."""
+    statements: list[str] = []
+    for raw in CONTINUATION.sub("", text).splitlines():
         line = raw.strip()
         head = line.lower()
         if re.match(r"include[\s:]", head):
             return f"{line!r}: include lines are not accepted, since they read files or run commands at submit time."
-        if head.startswith("queue") and "|" in line:
-            return f"{line!r}: queue ... | lines are not accepted, since they run a command at submit time."
+        if re.match(r"queue\b", head):
+            statements.append(line)
+    if len(statements) > 1:  # the parser reports only the first
+        return f"{statements[1]!r}: a second queue statement is not accepted, since only the first is checked."
+    try:
+        args = htcondor.Submit(text).getQArgs().strip()
+    except (ValueError, htcondor.HTCondorException):
+        return None  # parse() reports the error
+    if "|" in args or "$" in args:  # macros expand after this check
+        return f"'queue {args}': queue statements with a | or a macro are not accepted, since they can run a command at submit time."
     return None
 
 

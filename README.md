@@ -77,7 +77,8 @@ Every tool except `submit_job` is read-only: `draft_submit` writes nothing and c
 no schedd. `submit_job` queues jobs as the user the server runs as, and is marked
 non-read-only in its MCP annotations so clients can ask the user before calling it. It
 refuses `include` lines, which read files or run a shell command at submit time, and
-`queue ... |` statements, which run one. It never touches jobs already in the queue.
+`queue ... |` statements, which run one, along with a macro in the `queue` line or a second
+`queue` statement, which could hide one. It never touches jobs already in the queue.
 
 Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
 holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows

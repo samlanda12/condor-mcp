@@ -261,6 +261,8 @@ def draft_submit(
         output_files=output_files or [], cpus=cpus, memory_mb=memory_mb, disk_mb=disk_mb,
         gpus=gpus, queue=queue, extra=extra or {}, workdir=workdir,
     )
+    if reason := submit.runs_commands(text):
+        raise ToolError(f"The draft is not accepted: {reason}")
     warnings = submit.check_files(executable, input_files, queue, workdir)
     out: dict[str, Any] = {
         "submit_text": text,
@@ -314,10 +316,10 @@ def submit_job(
     submit file on the submit host. Jobs run as the user this server runs as.
     The description first goes through condor_submit's dry run and is refused
     if that reports an error. With dry_run=True nothing is queued and the
-    generated job ads come back instead, one row per job. include lines and
-    queue statements that run a command are refused. Returns the cluster id,
-    the number of jobs, and one list_jobs row per job; follow a job with
-    job_details."""
+    generated job ads come back instead, one row per job. include lines, a
+    second queue statement, and queue statements with a | or a macro are
+    refused. Returns the cluster id, the number of jobs, and one list_jobs row
+    per job; follow a job with job_details."""
     log.info("submit_job file=%s dry_run=%s text=%s", submit_file, dry_run, submit_text is not None)
     text, file_dir = submit.load(submit_text, submit_file)
     if reason := submit.runs_commands(text):
