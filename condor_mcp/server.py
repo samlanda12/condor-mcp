@@ -313,7 +313,8 @@ def submit_job(
     dry_run: Annotated[bool, Field(description="Queue nothing; return the job ads HTCondor would create.")] = False,
 ) -> dict[str, Any]:
     """Queue jobs from a submit description, given as text or as the path of a
-    submit file on the submit host. Jobs run as the user this server runs as.
+    submit file on the submit host. Jobs run as the user this server runs as,
+    and go to the first schedd in CONDOR_MCP_SCHEDDS, or the local one if unset.
     The description first goes through condor_submit's dry run and is refused
     if that reports an error. With dry_run=True nothing is queued and the
     generated job ads come back instead, one row per job. include lines, a

@@ -180,6 +180,16 @@ async def test_submit_dry_run_of_file_with_relative_initialdir(tmp_path):
     assert row["command"] == str(script)
 
 
+async def test_submit_dry_run_of_file_with_macro_initialdir(tmp_path):
+    for n in (0, 1):
+        (tmp_path / f"run_{n}").mkdir()
+    sub = tmp_path / "job.sub"
+    sub.write_text(f"initialdir = run_$(Process)\nexecutable = /bin/sleep\n+{TAG} = true\nqueue 2\n")
+    out = await call("submit_job", submit_file=str(sub), dry_run=True)
+    assert out["jobs"] == 2 and out["warnings"] == []
+    assert [row["submit_dir"] for row in out["job_ads"]] == [str(tmp_path / "run_0"), str(tmp_path / "run_1")]
+
+
 async def test_submit_job_queues_it(submitted_job):
     result = submitted_job["result"]
     cluster = submitted_job["cluster"]

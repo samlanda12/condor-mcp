@@ -191,7 +191,7 @@ def prepare(sub: htcondor.Submit, default_dir: Path) -> Path:
     base = Path(os.path.expanduser(sub.get("initialdir") or "."))
     if not base.is_absolute():
         base = default_dir / base
-    if not base.is_dir():
+    if "$(" not in str(base) and not base.is_dir():  # a macro path is checked by the dry run
         raise ToolError(f"initialdir {base} does not exist.")
     sub["initialdir"] = str(base)
     executable = os.path.expanduser(sub.get("executable") or "")

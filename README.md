@@ -69,7 +69,7 @@ comes in a later stage.
 | `hold_reasons(owner="me")` | Every held job with HTCondor's message, the hold code, what the code means, and a tally by code. |
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
 | `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
-| `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Returns the cluster id, job count, and one `list_jobs` row per job. |
+| `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Submits to the first schedd in `CONDOR_MCP_SCHEDDS`. Returns the cluster id, job count, and one `list_jobs` row per job. |
 
 ### Read-only and write tools
 
@@ -94,7 +94,7 @@ read once at startup, and an empty value is the same as unset.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `CONDOR_MCP_COLLECTOR` | from the HTCondor config | Collector to talk to, as `host[:port]`. |
-| `CONDOR_MCP_SCHEDDS` | local schedd | Schedds to query, comma-separated. Results are tagged with the schedd name. |
+| `CONDOR_MCP_SCHEDDS` | local schedd | Schedds to query, comma-separated. Results are tagged with the schedd name; `submit_job` uses the first. |
 | `CONDOR_MCP_USER` | the user running the server | Who `owner="me"` refers to. |
 | `CONDOR_MCP_SLOT_CONSTRAINT` | `True` | Only slots matching this ClassAd expression count in `pool_status`. |
 | `CONDOR_MCP_JOB_ATTRS` | none | Extra job attributes to return, comma-separated. |
