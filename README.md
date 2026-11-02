@@ -1,7 +1,10 @@
 # condor-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that puts an [HTCondor](https://htcondor.readthedocs.io/en/latest/) pool behind a
-natural-language interface. It lets an AI assistant answer questions like "why isn't my job running?" by calling tools that query the pool through the [htcondor2 Python bindings](https://htcondor.readthedocs.io/en/latest/apis/python-bindings/).
+An [MCP](https://modelcontextprotocol.io/) server that puts an
+[HTCondor](https://htcondor.readthedocs.io/en/latest/) pool behind a natural-language
+interface. It lets an AI assistant answer questions like "why isn't my job running?" by
+calling tools that query the pool through the
+[htcondor2 Python bindings](https://htcondor.readthedocs.io/en/latest/apis/python-bindings/).
 
 Built with [FastMCP](https://gofastmcp.com/) ([repo](https://github.com/jlowin/fastmcp)) for Syracuse University's OrangeGrid
 cluster. Example submit files to test against live in
@@ -12,7 +15,8 @@ cluster. Example submit files to test against live in
 These are from a Claude Code session on a one-machine
 [htcondor/mini](https://hub.docker.com/r/htcondor/mini) dev pool, with a few jobs queued
 ahead of time: one running, one that will never match because it asks for 128 GB on a
-32 GB machine, and one on hold because its input file doesn't exist.
+32 GB machine, and one on hold because its input file doesn't exist. Any MCP client
+works; Claude Code is shown because it runs on the submit host over stdio.
 
 Asking why a job is stuck:
 
@@ -264,11 +268,6 @@ refuses `include` lines, which read files or run a shell command at submit time,
 `queue ... |` statements, which run one, along with a macro in the `queue` line or a second
 `queue` statement, which could hide one. It never touches jobs already in the queue.
 
-Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
-holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows
-where the pool is and wraps connection errors, [submit.py](condor_mcp/submit.py) builds
-and checks submit files, [server.py](condor_mcp/server.py) defines the tools.
-
 ## Configuration
 
 With no settings the server uses the local HTCondor config: the default collector, the
@@ -309,3 +308,8 @@ uv run pytest
 Any HTCondor pool you can submit to works for development, including a single-machine
 one such as the [htcondor/mini](https://hub.docker.com/r/htcondor/mini) container. Whatever
 you use, run the server and the tests inside it as a user allowed to submit.
+
+Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
+holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows
+where the pool is and wraps connection errors, [submit.py](condor_mcp/submit.py) builds
+and checks submit files, [server.py](condor_mcp/server.py) defines the tools.
