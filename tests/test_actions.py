@@ -1,10 +1,12 @@
-"""hold_job and release_job against the live pool, on a cluster queued for the
-purpose and removed afterwards."""
+"""hold_job, release_job, and remove_job against the live pool, on a cluster
+queued for the purpose and removed afterwards."""
 
 from __future__ import annotations
 
 import getpass
+import time
 
+import anyio
 import pytest
 from fastmcp.exceptions import ToolError
 
@@ -15,7 +17,20 @@ ME = getpass.getuser()
 pytestmark = pytest.mark.anyio
 
 
-async def test_hold_then_release(fresh_job):
+async def _wait_until_gone(cluster: int, timeout: float = 60) -> None:
+    """A removed job can sit in the queue as 'removed' while its shadow exits."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            await call("job_details", cluster_id=cluster)
+        except ToolError as exc:
+            assert "not in the queue" in str(exc)
+            return
+        await anyio.sleep(2)
+    raise AssertionError(f"cluster {cluster} still in the queue after {timeout}s")
+
+
+async def test_hold_release_remove(fresh_job):
     held = await call("hold_job", cluster_id=fresh_job, reason="pausing for a test")
     assert held["action"] == "hold" and held["reason"] == "pausing for a test"
     assert held["changed"] == 1 and "note" not in held
@@ -38,6 +53,22 @@ async def test_hold_then_release(fresh_job):
     assert "hold_reason" not in row
     job = await call("job_details", cluster_id=fresh_job)
     assert job["status"] in ("idle", "running") and "hold" not in job
+
+    removed = await call("remove_job", cluster_id=fresh_job, reason="done with it")
+    assert removed["action"] == "remove" and removed["changed"] == 1
+    (row,) = removed["jobs"]
+    assert row["status_before"] in ("idle", "running") and row["status_after"] == "removed"
+    await _wait_until_gone(fresh_job)
+
+    again = await call("remove_job", cluster_id=fresh_job, reason="a second time")
+    assert again["changed"] == 0 and again["jobs"] == []
+    assert again["note"].startswith(f"Nothing to remove: cluster {fresh_job} is not in the queue")
+
+
+async def test_remove_of_a_missing_job_is_not_an_error():
+    out = await call("remove_job", cluster_id=999999, proc_id=3, reason="no such job")
+    assert out["changed"] == 0 and out["jobs"] == []
+    assert "job 999999.3 is not in the queue" in out["note"] and "ID may be wrong" in out["note"]
 
 
 async def test_release_of_a_job_not_held(fresh_job):
@@ -67,8 +98,10 @@ async def test_act_refuses_another_users_job(fresh_job, monkeypatch):
         await call("hold_job", cluster_id=fresh_job, reason="not mine")
     with pytest.raises(ToolError, match="Refusing to release"):
         await call("release_job", cluster_id=fresh_job, reason="not mine")
+    with pytest.raises(ToolError, match="Refusing to remove"):
+        await call("remove_job", cluster_id=fresh_job, reason="not mine")
     job = await call("job_details", cluster_id=fresh_job)
-    assert "hold" not in job
+    assert job["status"] in ("idle", "running") and "hold" not in job
 
 
 @pytest.mark.parametrize("args", [{"reason": ""}, {}, {"proc_id": -1, "reason": "x"}])

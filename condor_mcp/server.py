@@ -379,6 +379,8 @@ def submit_job(
 
 # Changes a job's state. Repeating the call leaves the job as it is, so idempotent.
 ACT = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
+# Takes a job out of the queue for good; a client should warn the user before calling.
+DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
 ClusterField = Field(ge=1, description="Cluster number, the part before the dot in 123.0")
 ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
@@ -405,6 +407,14 @@ def _act(action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reaso
         label = f"job {cluster_id}.{proc_id}"
     log.info("%s_job %s reason=%r", verb, label, reason)
     found = pool.query_jobs(constraint, _ACT_PROJECTION)
+    if not found and action == htcondor.JobAction.Remove:
+        # Removing twice is a no-op, the queue is already in the asked-for state.
+        log.info("  -> nothing to remove")
+        return {
+            "action": verb, "reason": reason, "changed": 0, "jobs": [],
+            "note": f"Nothing to remove: {label} is not in the queue. It may already have been "
+            "removed or finished, or the ID may be wrong.",
+        }
     if not found:
         raise ToolError(
             f"{label[0].upper()}{label[1:]} is not in the queue. It may have finished and "
@@ -486,6 +496,22 @@ def release_job(
     Returns each job's status before and after; a job that was not held is left
     alone and reported."""
     return _act(htcondor.JobAction.Release, cluster_id, proc_id, reason)
+
+
+@mcp.tool(annotations=DESTRUCTIVE, tags={"jobs", "write"})
+def remove_job(
+    cluster_id: Annotated[int, ClusterField],
+    reason: Annotated[str, ReasonField],
+    proc_id: Annotated[int | None, ProcField] = None,
+) -> dict[str, Any]:
+    """Remove a job from the queue for good: a running job is killed and an idle
+    or held one is dropped. There is no undo; the job has to be submitted again.
+    Output files already written stay where they are. Use this when a user wants
+    to cancel, kill, or delete a job; use hold_job to pause one instead. Acts on
+    every job in the cluster unless proc_id is given, and only on jobs the
+    configured user owns. Returns each job's status before and after; a job that
+    has already left the queue is reported as such rather than an error."""
+    return _act(htcondor.JobAction.Remove, cluster_id, proc_id, reason)
 
 
 def main() -> None:
