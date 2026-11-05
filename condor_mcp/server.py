@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import getpass
 from collections import Counter
 from typing import Annotated, Any, Literal
 
@@ -374,6 +375,117 @@ def submit_job(
         out["schedd"] = name
     log.info("  -> cluster %d, %d jobs", cluster, result.num_procs())
     return out
+
+
+# Changes a job's state. Repeating the call leaves the job as it is, so idempotent.
+ACT = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
+
+ClusterField = Field(ge=1, description="Cluster number, the part before the dot in 123.0")
+ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
+ReasonField = Field(
+    min_length=1, max_length=200,
+    description="Why, in a sentence. HTCondor records it on the job and job_details shows it.",
+)
+_ACT_PROJECTION = ["ClusterId", "ProcId", "Owner", "JobStatus", "HoldReason"]
+
+
+def _status(ad: Any) -> str:
+    code = get(ad, "JobStatus")
+    return classads.JOB_STATUS.get(code, f"unknown({code})")
+
+
+def _act(action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reason: str) -> dict[str, Any]:
+    """Apply one JobAction to a cluster or a single job after checking it belongs
+    to the configured user, and report each job's status before and after."""
+    verb = action.name.lower()
+    constraint = f"ClusterId == {cluster_id}"
+    label = f"cluster {cluster_id}"
+    if proc_id is not None:
+        constraint += f" && ProcId == {proc_id}"
+        label = f"job {cluster_id}.{proc_id}"
+    log.info("%s_job %s reason=%r", verb, label, reason)
+    found = pool.query_jobs(constraint, _ACT_PROJECTION)
+    if not found:
+        raise ToolError(
+            f"{label[0].upper()}{label[1:]} is not in the queue. It may have finished and "
+            "left the queue, or the ID may be wrong. Try list_jobs to see what is queued."
+        )
+    names = sorted({name for name, _ in found})
+    if len(names) > 1:
+        raise ToolError(
+            f"{label[0].upper()}{label[1:]} exists on more than one schedd ({', '.join(names)}), "
+            "so the ID is ambiguous. Set CONDOR_MCP_SCHEDDS to the one that holds the job."
+        )
+    others = sorted({get(ad, "Owner") for _, ad in found} - {settings.user})
+    if others:
+        raise ToolError(
+            f"Refusing to {verb} {label}: it belongs to {', '.join(others)}, not {settings.user}. "
+            "This server only acts on jobs owned by the user it runs as (CONDOR_MCP_USER)."
+        )
+    (name,) = names
+    schedd = dict(pool.schedds())[name]
+    before = {classads.job_id(ad): ad for _, ad in found}
+    mine, _ = pool.owner_constraint("me")  # so the schedd enforces the owner check too
+    try:
+        # htcondor2 drops a plain-string reason on the floor; only the (text, code) tuple reaches
+        # the schedd. A None code keeps HoldReasonCode at 1, the same as condor_hold.
+        result = schedd.act(action, f"{constraint} && {mine}", reason=(reason, None))
+    except (htcondor.HTCondorException, RuntimeError) as exc:
+        raise ToolError(f"The schedd ({name}) could not {verb} {label}: {exc}") from exc
+    changed = get(result, "TotalChangedAds", 0)
+    if changed == 0 and get(result, "TotalPermissionDenied", 0):
+        raise ToolError(
+            f"The schedd ({name}) denied permission to {verb} {label}. The server runs as "
+            f"{getpass.getuser()}; only the job's owner or a queue superuser can change it."
+        )
+    after = {classads.job_id(ad): ad for _, ad in pool.query_jobs(constraint, _ACT_PROJECTION)}
+    rows = []
+    for jid, old in before.items():
+        new = after.get(jid)
+        row = {"job_id": jid, "status_before": _status(old), "status_after": _status(new) if new else "removed"}
+        if new is None:
+            row["note"] = "left the queue"
+        elif get(new, "JobStatus") == JobStatus.HELD:
+            row["hold_reason"] = get(new, "HoldReason")
+        rows.append(row)
+    out: dict[str, Any] = {"action": verb, "reason": reason, "changed": changed, "jobs": rows}
+    if changed == 0:
+        states = ", ".join(f"{r['job_id']} is {r['status_after']}" for r in rows)
+        out["note"] = f"Nothing to {verb}: {states}."
+    if pool.multi_schedd():
+        out["schedd"] = name
+    log.info("  -> %s changed %d of %d", verb, changed, len(rows))
+    return out
+
+
+@mcp.tool(annotations=ACT, tags={"jobs", "write"})
+def hold_job(
+    cluster_id: Annotated[int, ClusterField],
+    reason: Annotated[str, ReasonField],
+    proc_id: Annotated[int | None, ProcField] = None,
+) -> dict[str, Any]:
+    """Put a job on hold: a running job is stopped and an idle one stops waiting,
+    and it stays in the queue until released. Use this to pause a job or to stop
+    one that is running wrongly without losing it. Acts on every job in the
+    cluster unless proc_id is given, and only on jobs the configured user owns.
+    Returns each job's status before and after; a job that was already held is
+    left alone and reported."""
+    return _act(htcondor.JobAction.Hold, cluster_id, proc_id, reason)
+
+
+@mcp.tool(annotations=ACT, tags={"jobs", "write"})
+def release_job(
+    cluster_id: Annotated[int, ClusterField],
+    reason: Annotated[str, ReasonField],
+    proc_id: Annotated[int | None, ProcField] = None,
+) -> dict[str, Any]:
+    """Release a held job so it goes back to idle and can be matched again. Fix
+    the cause first (hold_reasons says what it was): a job released with the
+    cause still present goes straight back on hold. Acts on every job in the
+    cluster unless proc_id is given, and only on jobs the configured user owns.
+    Returns each job's status before and after; a job that was not held is left
+    alone and reported."""
+    return _act(htcondor.JobAction.Release, cluster_id, proc_id, reason)
 
 
 def main() -> None:

@@ -258,15 +258,26 @@ comes in a later stage.
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
 | `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
 | `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Submits to the first schedd in `CONDOR_MCP_SCHEDDS`. Returns the cluster id, job count, and one `list_jobs` row per job. |
+| `hold_job(cluster_id, reason, proc_id=None)` | Puts a job on hold, or every job in the cluster if `proc_id` is omitted. A running job is stopped; it stays in the queue until released. The reason is recorded on the job. Returns each job's status before and after. |
+| `release_job(cluster_id, reason, proc_id=None)` | Releases a held job back to idle so it can be matched again. A job whose hold cause is still present goes straight back on hold. Returns each job's status before and after. |
 
 ### Read-only and write tools
 
-Every tool except `submit_job` is read-only: `draft_submit` writes nothing and contacts
-no schedd. `submit_job` queues jobs as the user the server runs as, and is marked
-non-read-only in its MCP annotations so clients can ask the user before calling it. It
-refuses `include` lines, which read files or run a shell command at submit time, and
-`queue ... |` statements, which run one, along with a macro in the `queue` line or a second
-`queue` statement, which could hide one. It never touches jobs already in the queue.
+`job_details`, `list_jobs`, `hold_reasons`, `pool_status`, and `draft_submit` are
+read-only: `draft_submit` writes nothing and contacts no schedd. The rest change the queue
+and are marked non-read-only in their MCP annotations so clients can ask the user before
+calling them.
+
+`submit_job` queues jobs as the user the server runs as. It refuses `include` lines, which
+read files or run a shell command at submit time, and `queue ... |` statements, which run
+one, along with a macro in the `queue` line or a second `queue` statement, which could
+hide one.
+
+`hold_job` and `release_job` act only on jobs owned by the configured user
+(`CONDOR_MCP_USER`) and refuse anyone else's, before HTCondor's own permission check.
+Each takes a reason, which HTCondor records on the job, and reports what changed; a job
+already in the requested state is left alone. Calling one twice has the same effect as
+calling it once.
 
 ## Configuration
 
@@ -292,8 +303,8 @@ expected.
 
 The tests run against a live pool and need permission to submit. They submit a sleep job
 and a job that goes on hold with a missing input file, wait for both, check every tool,
-queue a third through `draft_submit` and `submit_job`, and remove only the jobs they
-submitted (tagged `CondorMcpTest`). Drafts and submitted jobs use a work directory
+queue a third through `draft_submit` and `submit_job`, hold and release a fourth, and
+remove only the jobs they submitted (tagged `CondorMcpTest`). Drafts and submitted jobs use a work directory
 under the system temp dir. Don't run them against a production schedd you
 don't own. They also assume a small development pool: a single
 execute machine with no GPUs, as in the container below. On a bigger pool the server

@@ -1,0 +1,77 @@
+"""hold_job and release_job against the live pool, on a cluster queued for the
+purpose and removed afterwards."""
+
+from __future__ import annotations
+
+import getpass
+
+import pytest
+from fastmcp.exceptions import ToolError
+
+from conftest import call
+
+ME = getpass.getuser()
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_hold_then_release(fresh_job):
+    held = await call("hold_job", cluster_id=fresh_job, reason="pausing for a test")
+    assert held["action"] == "hold" and held["reason"] == "pausing for a test"
+    assert held["changed"] == 1 and "note" not in held
+    (row,) = held["jobs"]
+    assert row["job_id"] == f"{fresh_job}.0"
+    assert row["status_before"] in ("idle", "running") and row["status_after"] == "held"
+    assert row["hold_reason"] == f"pausing for a test (by user {ME})"
+    job = await call("job_details", cluster_id=fresh_job)
+    assert job["status"] == "held"
+    assert job["hold"]["code"] == 1 and job["hold"]["reason"] == f"pausing for a test (by user {ME})"
+
+    again = await call("hold_job", cluster_id=fresh_job, reason="a second time")
+    assert again["changed"] == 0 and again["note"] == f"Nothing to hold: {fresh_job}.0 is held."
+    assert again["jobs"][0]["status_before"] == "held"
+
+    released = await call("release_job", cluster_id=fresh_job, proc_id=0, reason="test is over")
+    assert released["action"] == "release" and released["changed"] == 1
+    (row,) = released["jobs"]
+    assert row["status_before"] == "held" and row["status_after"] == "idle"
+    assert "hold_reason" not in row
+    job = await call("job_details", cluster_id=fresh_job)
+    assert job["status"] in ("idle", "running") and "hold" not in job
+
+
+async def test_release_of_a_job_not_held(fresh_job):
+    out = await call("release_job", cluster_id=fresh_job, reason="nothing to do")
+    assert out["changed"] == 0 and out["note"].startswith("Nothing to release")
+    (row,) = out["jobs"]
+    assert row["status_before"] == row["status_after"] in ("idle", "running")
+
+
+async def test_act_on_missing_job():
+    with pytest.raises(ToolError, match="Cluster 999999 is not in the queue"):
+        await call("hold_job", cluster_id=999999, reason="no such job")
+
+
+async def test_act_on_missing_proc(fresh_job):
+    with pytest.raises(ToolError, match=f"Job {fresh_job}.7 is not in the queue"):
+        await call("hold_job", cluster_id=fresh_job, proc_id=7, reason="no such proc")
+
+
+async def test_act_refuses_another_users_job(fresh_job, monkeypatch):
+    from condor_mcp import pool, server
+
+    as_other = pool.settings.model_copy(update={"user": "someone-else"})
+    monkeypatch.setattr(pool, "settings", as_other)
+    monkeypatch.setattr(server, "settings", as_other)
+    with pytest.raises(ToolError, match=f"Refusing to hold cluster {fresh_job}: it belongs to {ME}, not someone-else"):
+        await call("hold_job", cluster_id=fresh_job, reason="not mine")
+    with pytest.raises(ToolError, match="Refusing to release"):
+        await call("release_job", cluster_id=fresh_job, reason="not mine")
+    job = await call("job_details", cluster_id=fresh_job)
+    assert "hold" not in job
+
+
+@pytest.mark.parametrize("args", [{"reason": ""}, {}, {"proc_id": -1, "reason": "x"}])
+async def test_act_argument_errors(args):
+    with pytest.raises(ToolError):
+        await call("hold_job", cluster_id=1, **args)
