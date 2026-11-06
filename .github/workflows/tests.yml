@@ -1,0 +1,32 @@
+name: tests
+
+on:
+    push:
+        branches: [ main ]
+    pull_request:
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        # The tests submit to a live pool, so run inside the HTCondor mini image
+        container: htcondor/mini:25.13.2-el9
+        timeout-minutes: 20
+        steps:
+            - name: checkout the repo
+              uses: actions/checkout@v5
+
+            - name: start the pool
+              run: |
+                  /start.sh > /tmp/start.log 2>&1 &
+                  condor_who -quick -wait:120 'IsReady && STARTD_State =?= "Ready"'
+
+            - name: install uv
+              run: |
+                  dnf install -y python3.12-pip
+                  python3.12 -m pip install uv
+
+            # The schedd refuses submissions from root, so test as submituser
+            - name: run tests
+              run: |
+                  chown -R submituser .
+                  runuser -u submituser -- env HOME=/home/submituser uv run --locked pytest
