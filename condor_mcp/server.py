@@ -71,9 +71,7 @@ def job_details(
             "is queued."
         )
     schedd, ad = found[0]
-    summary = classads.summarize_job(ad, settings.job_attrs)
-    if pool.multi_schedd():
-        summary["schedd"] = schedd
+    summary = pool.tag_schedd(classads.summarize_job(ad, settings.job_attrs), schedd)
     log.info("  -> job %s is %s", summary["job_id"], summary["status"])
     return summary
 
@@ -105,9 +103,7 @@ def list_jobs(
         row = classads.compact_job(ad)
         if settings.job_attrs:
             row["site"] = classads.site_attrs(ad, settings.job_attrs)
-        if pool.multi_schedd():
-            row["schedd"] = schedd
-        rows.append(row)
+        rows.append(pool.tag_schedd(row, schedd))
     matching = counts[status] if status else sum(counts.values())
     out = {
         "owner": name or "all",
@@ -144,9 +140,7 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
         row = classads.held_job(ad)
         if settings.job_attrs:
             row["site"] = classads.site_attrs(ad, settings.job_attrs)
-        if pool.multi_schedd():
-            row["schedd"] = schedd
-        rows.append(row)
+        rows.append(pool.tag_schedd(row, schedd))
     tally = Counter(row["code"] for row in rows)
     out = {
         "owner": name or "all",
@@ -373,8 +367,7 @@ def submit_job(
         "job_list": [classads.compact_job(ad) for ad in queued],
         "warnings": warnings,
     }
-    if pool.multi_schedd():
-        out["schedd"] = name
+    pool.tag_schedd(out, name)
     log.info("  -> cluster %d, %d jobs", cluster, result.num_procs())
     return out
 
@@ -459,6 +452,7 @@ def _act(
         raise ToolError(f"The schedd ({name}) returned no result for {verb} {label}; try again.")
     changed = get(result, "TotalChangedAds", 0)
     if changed == 0 and get(result, "TotalPermissionDenied", 0):
+        # Names the OS user, not CONDOR_MCP_USER as the refusal above does
         raise ToolError(
             f"The schedd ({name}) denied permission to {verb} {label}. The server runs as "
             f"{getpass.getuser()}; only the job's owner or a queue superuser can change it."
@@ -486,8 +480,7 @@ def _act(
     if changed == 0:
         states = ", ".join(f"{r['job_id']} is {r['status_after']}" for r in rows)
         out["note"] = f"Nothing to {verb}: {states}."
-    if pool.multi_schedd():
-        out["schedd"] = name
+    pool.tag_schedd(out, name)
     log.info("  -> %s changed %d of %d", verb, changed, len(rows))
     return out
 

@@ -102,8 +102,12 @@ def schedds() -> Iterator[tuple[str, htcondor.Schedd]]:
         yield name, htcondor.Schedd(ad)
 
 
-def multi_schedd() -> bool:
-    return len(settings.schedds) > 1
+def tag_schedd(row: dict[str, Any], name: str) -> dict[str, Any]:
+    """Add the schedd name to a result row when more than one schedd is configured,
+    so a job ID can be traced to its queue. Returns the row."""
+    if len(settings.schedds) > 1:
+        row["schedd"] = name
+    return row
 
 
 def query_schedd(
