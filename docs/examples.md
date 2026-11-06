@@ -192,11 +192,12 @@ Once approved, the job queues and starts right away:
 
 ## Holding, releasing, and removing
 
-This part is from a later session, after analyze.py had been resubmitted as job 179.0.
-The user pauses it to fix its input and then lets it run again. Both `hold_job` and
+This part is from a later session with the queue staged again: train.py is now job
+249.0, and analyze.py, resubmitted from the draft above, is job 250.0 and running. The
+user pauses it to fix its input and then lets it run again. Both `hold_job` and
 `release_job` ask before acting, and each records a reason on the job:
 
-<img src="images/screenshot-hold-release.png" width="720" alt="Claude Code holding job 179.0 and then releasing it">
+<img src="images/screenshot-hold-release.png" width="720" alt="Claude Code holding job 250.0 and then releasing it">
 
 <details>
 <summary>Transcript</summary>
@@ -204,43 +205,47 @@ The user pauses it to fix its input and then lets it run again. Both `hold_job` 
 ```text
 ❯ Pause my analyze.py job, I need to fix data.csv before it gets further.
 
-● I'll find your analyze.py job in the queue and put it on hold.
+● I'll find the analyze.py job and put it on hold.
 
   Called condor
 
-● Found it: job 179.0 is running analyze.py on data.csv. Holding it now.
+● Job 250.0 is the running analyze.py job. Holding it now.
 
   Called condor
 
-● Job 179.0 is now held. It was running analyze.py on data.csv and has been stopped and kept in the queue.
+● Your analyze.py job is paused.
 
-  One thing to know before you fix the file: HTCondor killed the running process rather than suspending it. When you
-  release the job, it will start over from the beginning, not resume where it left off. The job will pick up whichever
-  copy of data.csv is in place when it restarts, so make your edits and then release it.
+  - Job 250.0 was running on slot1_1 and is now held. The hold reason recorded on it is "Paused to fix data.csv before
+    the analysis goes further."
+  - It stays in the queue, so nothing is lost. Once data.csv is fixed, ask me to release it and HTCondor will restart it
+    from the beginning.
 
-  Your other two jobs are untouched: train.py is still idle, and the old cat job is still held from its earlier
-  file-transfer failure.
+  One thing to keep in mind: the job was submitted with data.csv as an input, so if the file is transferred at start
+  rather than read in place, the fixed copy will be picked up when the job restarts after release.
 
-✻ Cooked for 8s · done 9:14 PM
+✻ Sautéed for 8s · done 11:59 PM
 
 ❯ data.csv is fixed. Let it run again.
 
-● Releasing job 179.0 now.
+● Releasing job 250.0 now.
 
   Called condor
 
-● Job 179.0 is released and back to idle. The scheduler will match it to a slot and restart analyze.py from the
-  beginning with the fixed data.csv. The old cat job stays held and train.py stays idle, as before.
+● Job 250.0 is released and back in the queue as idle. HTCondor will match it to a slot on the next negotiation cycle
+  and restart analyze.py from the beginning with the fixed data.csv. The release reason recorded on the job is "data.csv
+  has been fixed; resuming the analysis."
 
-✻ Baked for 4s · done 9:15 PM
+✻ Baked for 5s · done 11:59 PM
 ```
 
 </details>
 
-The 128 GB train.py job will never fit on this pool, so the user has it removed. The
-approval prompt includes the tool's warning that removal can't be undone:
+The 128 GB train.py job will never fit on this pool, so the user has it removed. There is
+no undo, so `remove_job` takes a `proc_id` or an explicit `all_procs=True` rather than
+acting on a whole cluster by default, and the approval prompt names the job it is about
+to drop:
 
-<img src="images/screenshot-remove-prompt.png" width="720" alt="The permission prompt before remove_job on job 112">
+<img src="images/screenshot-remove-prompt.png" width="720" alt="The permission prompt before remove_job on job 249.0">
 
 <details>
 <summary>Transcript</summary>
@@ -248,7 +253,7 @@ approval prompt includes the tool's warning that removal can't be undone:
 ```text
 ❯ The train.py job is never going to fit here. Get rid of it.
 
-● Removing job 112.0, the idle train.py job.
+● Removing the train.py job, which is job 249.0 from the earlier listing.
 
 ● Calling condor…
 
@@ -256,8 +261,10 @@ approval prompt includes the tool's warning that removal can't be undone:
  Tool use
  condor — Remove Job Tool: (MCP)
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- cluster_id: 112
- reason: "Job cannot be matched on this pool; removed at user's request."
+ cluster_id: 249
+ proc_id: 0
+ reason:
+   │ Removed by user: the job's resource request cannot be matched on this pool.
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
  About the condor — Remove Job Tool:
  │ Remove a job from the queue for good: a running job is killed and an idle
@@ -270,6 +277,31 @@ approval prompt includes the tool's warning that removal can't be undone:
    3. No
 
  Esc to cancel · Tab to amend
+```
+
+</details>
+
+After approving:
+
+<img src="images/screenshot-remove-result.png" width="720" alt="Job 249.0 removed, leaving analyze.py and the held cat job in the queue">
+
+<details>
+<summary>Transcript</summary>
+
+```text
+❯ The train.py job is never going to fit here. Get rid of it.
+
+● Removing the train.py job, which is job 249.0 from the earlier listing.
+
+  Called condor
+
+● The train.py job is gone. Job 249.0 was idle and has left the queue. The remove reason recorded in the job history
+  says the resource request could not be matched on this pool.
+
+  Your queue now holds two jobs: analyze.py as job 250.0, released earlier and waiting to be matched, and the old job
+  3.0 still held on an input file transfer failure.
+
+✻ Crunched for 6s · done 12:00 AM
 ```
 
 </details>
