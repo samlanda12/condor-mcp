@@ -1,4 +1,4 @@
-name: tests
+name: ci
 
 on:
     push:
@@ -30,3 +30,21 @@ jobs:
               run: |
                   chown -R submituser .
                   runuser -u submituser -- env HOME=/home/submituser uv run --locked pytest
+
+    typecheck:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: checkout the repo
+              uses: actions/checkout@v5
+
+            - name: set up python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: '3.12'
+
+            - name: install uv
+              run: python -m pip install uv
+
+            - name: run mypy
+              run: uv run --locked mypy condor_mcp tests
