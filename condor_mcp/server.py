@@ -385,10 +385,15 @@ ACT = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
 DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
 ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
-ReasonField = Field(
-    min_length=1, max_length=200,
-    description="Why, in a sentence. HTCondor records it on the job and job_details shows it.",
-)
+
+
+def _reason_field(recorded: str) -> Any:
+    return Field(min_length=1, max_length=200, description=f"Why, in a sentence. HTCondor records it {recorded}.")
+
+
+HoldReasonField = _reason_field("on the job as the hold reason, and job_details shows it")
+ReleaseReasonField = _reason_field("on the job as the release reason, and job_details shows it")
+RemoveReasonField = _reason_field("in the job history as the remove reason; the job itself leaves the queue")
 _ACT_PROJECTION = ["ClusterId", "ProcId", "Owner", "JobStatus", "HoldReason"]
 
 
@@ -406,7 +411,12 @@ def _act(
         label = f"job {cluster_id}.{proc_id}"
     log.info("%s_job %s reason=%r", verb, label, reason)
     title = label.capitalize()
-    found = pool.query_jobs(constraint, _ACT_PROJECTION)
+    # Not pool.query_jobs: we keep each Schedd so the action can reuse the one holding the job
+    by_name: dict[str, htcondor.Schedd] = {}
+    found: list[tuple[str, Any]] = []
+    for name, schedd in pool.schedds():
+        by_name[name] = schedd
+        found.extend((name, ad) for ad in pool.query_schedd(name, schedd, constraint, _ACT_PROJECTION))
     if not found and missing_ok:
         log.info("  -> nothing to %s", verb)
         return {
@@ -432,7 +442,7 @@ def _act(
             "This server only acts on jobs owned by the user it runs as (CONDOR_MCP_USER)."
         )
     (name,) = names
-    schedd = dict(pool.schedds())[name]
+    schedd = by_name[name]
     before = {classads.job_id(ad): ad for _, ad in found}
     mine, _ = pool.owner_constraint("me")  # so the schedd enforces the owner check too
     try:
@@ -449,7 +459,10 @@ def _act(
             f"The schedd ({name}) denied permission to {verb} {label}. The server runs as "
             f"{getpass.getuser()}; only the job's owner or a queue superuser can change it."
         )
-    after = {classads.job_id(ad): ad for _, ad in pool.query_jobs(constraint, _ACT_PROJECTION)}
+    after = {
+        classads.job_id(ad): ad
+        for ad in pool.query_schedd(name, schedd, constraint, _ACT_PROJECTION)
+    }
     # Only a remove can take credit for a job that is gone
     gone = "removed" if action == htcondor.JobAction.Remove else "left the queue"
     rows = []
@@ -478,7 +491,7 @@ def _act(
 @mcp.tool(annotations=ACT, tags={"jobs", "write"})
 def hold_job(
     cluster_id: Annotated[int, ClusterField],
-    reason: Annotated[str, ReasonField],
+    reason: Annotated[str, HoldReasonField],
     proc_id: Annotated[int | None, ProcField] = None,
 ) -> dict[str, Any]:
     """Put a job on hold: a running job is stopped and an idle one stops waiting,
@@ -493,7 +506,7 @@ def hold_job(
 @mcp.tool(annotations=ACT, tags={"jobs", "write"})
 def release_job(
     cluster_id: Annotated[int, ClusterField],
-    reason: Annotated[str, ReasonField],
+    reason: Annotated[str, ReleaseReasonField],
     proc_id: Annotated[int | None, ProcField] = None,
 ) -> dict[str, Any]:
     """Release a held job so it goes back to idle and can be matched again. Fix
@@ -508,7 +521,7 @@ def release_job(
 @mcp.tool(annotations=DESTRUCTIVE, tags={"jobs", "write"})
 def remove_job(
     cluster_id: Annotated[int, ClusterField],
-    reason: Annotated[str, ReasonField],
+    reason: Annotated[str, RemoveReasonField],
     proc_id: Annotated[int | None, ProcField] = None,
 ) -> dict[str, Any]:
     """Remove a job from the queue for good: a running job is killed and an idle

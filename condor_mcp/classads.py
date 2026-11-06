@@ -71,7 +71,7 @@ JOB_PROJECTION = [
     "QDate", "JobStartDate", "CompletionDate", "RemoteHost",
     "RequestCpus", "RequestMemory", "RequestDisk", "TransferInputSizeMB",
     "MemoryUsage", "RemoteWallClockTime", "NumJobStarts",
-    "HoldReason", "HoldReasonCode", "HoldReasonSubCode",
+    "HoldReason", "HoldReasonCode", "HoldReasonSubCode", "ReleaseReason",
     "ExitCode", "ExitBySignal", "ExitSignal",
     "Out", "Err", "UserLog", "TransferInput",
 ]
@@ -202,6 +202,8 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
     }
     if status_code == JobStatus.HELD:
         out["hold"] = hold_info(ad)
+    if get(ad, "ReleaseReason"):  # stays on the ad after a release, whatever the job did next
+        out["last_release_reason"] = get(ad, "ReleaseReason")
     if status_code == JobStatus.COMPLETED:
         out["exit"] = {
             "code": get(ad, "ExitCode"),

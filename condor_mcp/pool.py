@@ -106,6 +106,23 @@ def multi_schedd() -> bool:
     return len(settings.schedds) > 1
 
 
+def query_schedd(
+    name: str,
+    schedd: htcondor.Schedd,
+    constraint: str,
+    projection: list[str],
+    limit: int = -1,
+) -> list[classad.ClassAd]:
+    """Run one job query against one schedd, turning a failure into a ToolError."""
+    try:
+        return schedd.query(constraint=constraint, projection=projection, limit=limit)
+    except htcondor.HTCondorException as exc:  # schedd down, auth, etc.
+        raise ToolError(
+            f"Could not reach the schedd ({name}): {exc}. Is the schedd up? "
+            "Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
+        ) from exc
+
+
 def query_jobs(
     constraint: str,
     projection: list[str],
@@ -114,17 +131,11 @@ def query_jobs(
     """Run one job query against every configured schedd and merge the results.
 
     Returns (schedd name, ad) pairs. The limit applies per schedd."""
-    found: list[tuple[str, classad.ClassAd]] = []
-    for name, schedd in schedds():
-        try:
-            ads = schedd.query(constraint=constraint, projection=projection, limit=limit)
-        except htcondor.HTCondorException as exc:  # schedd down, auth, etc.
-            raise ToolError(
-                f"Could not reach the schedd ({name}): {exc}. Is the schedd up? "
-                "Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
-            ) from exc
-        found.extend((name, ad) for ad in ads)
-    return found
+    return [
+        (name, ad)
+        for name, schedd in schedds()
+        for ad in query_schedd(name, schedd, constraint, projection, limit)
+    ]
 
 
 def query_slots(projection: list[str], constraint: str | None = None) -> list[classad.ClassAd]:
