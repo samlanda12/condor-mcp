@@ -184,7 +184,7 @@ These tools only see jobs that are still in the queue. Job history isn't support
 | `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Submits to the first schedd in `CONDOR_MCP_SCHEDDS`. Returns the cluster id, job count, and one `list_jobs` row per job. |
 | `hold_job(cluster_id, reason, proc_id=None)` | Puts a job on hold, or every job in the cluster if `proc_id` is omitted. A running job is stopped; it stays in the queue until released. The reason is recorded on the job. Returns each job's status before and after. |
 | `release_job(cluster_id, reason, proc_id=None)` | Releases a held job back to idle so it can be matched again. A job whose hold cause is still present goes straight back on hold. Returns each job's status before and after. |
-| `remove_job(cluster_id, reason, proc_id=None)` | Removes a job from the queue for good: a running job is killed, an idle or held one is dropped. No undo. Output already written stays on disk. |
+| `remove_job(cluster_id, reason, proc_id=None, all_procs=False)` | Removes a job from the queue for good: a running job is killed, an idle or held one is dropped. Takes `proc_id` for one job or `all_procs=True` for the whole cluster. No undo. Output already written stays on disk. |
 
 ### Read-only and write tools
 
@@ -205,7 +205,8 @@ run commands at submit time, it refuses:
 (`CONDOR_MCP_USER`) and refuse anyone else's, before HTCondor's own permission check.
 Each takes a reason, which HTCondor records on the job, and reports what changed; a job
 already in the requested state is left alone. `remove_job` is the one tool marked destructive in its annotations: a
-removed job cannot be brought back, only resubmitted.
+removed job cannot be brought back, only resubmitted. It is also the one tool that will not
+act on a whole cluster by default: it needs `proc_id` or an explicit `all_procs=True`.
 
 ## Configuration
 

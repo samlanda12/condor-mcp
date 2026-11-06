@@ -385,6 +385,10 @@ ACT = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
 DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
 ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
+RemoveProcField = Field(
+    ge=0, description="Process number within the cluster. Give this, or all_procs=True, never both.",
+)
+AllProcsField = Field(description="Remove every job in the cluster. Only valid without proc_id.")
 
 
 def _reason_field(recorded: str) -> Any:
@@ -522,15 +526,24 @@ def release_job(
 def remove_job(
     cluster_id: Annotated[int, ClusterField],
     reason: Annotated[str, RemoveReasonField],
-    proc_id: Annotated[int | None, ProcField] = None,
+    proc_id: Annotated[int | None, RemoveProcField] = None,
+    all_procs: Annotated[bool, AllProcsField] = False,
 ) -> dict[str, Any]:
     """Remove a job from the queue for good: a running job is killed and an idle
     or held one is dropped. There is no undo; the job has to be submitted again.
     Output files already written stay where they are. Use this when a user wants
-    to cancel, kill, or delete a job; use hold_job to pause one instead. Acts on
-    every job in the cluster unless proc_id is given, and only on jobs the
-    configured user owns. Returns each job's status before and after; a job that
-    has already left the queue is reported as such rather than an error."""
+    to cancel, kill, or delete a job; use hold_job to pause one instead. Removes
+    the one job proc_id names, or every job in the cluster with all_procs=True;
+    one of the two is required. Acts only on jobs the configured user owns.
+    Returns each job's status before and after; a job that has already left the
+    queue is reported as such rather than an error."""
+    # Unlike hold and release, an omitted proc_id does not mean the whole cluster: there is no
+    # undo, so the caller has to say which it meant.
+    if (proc_id is None) == (not all_procs):
+        raise ToolError(
+            f"Say what to remove from cluster {cluster_id}: proc_id for one job, or "
+            "all_procs=True for every job in the cluster. Not both, and not neither."
+        )
     # Removing twice is a no-op: the queue is already in the asked-for state.
     return _act(htcondor.JobAction.Remove, cluster_id, proc_id, reason, missing_ok=True)
 
