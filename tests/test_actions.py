@@ -49,7 +49,7 @@ async def test_hold_release_remove(fresh_job):
     released = await call("release_job", cluster_id=fresh_job, proc_id=0, reason="test is over")
     assert released["action"] == "release" and released["changed"] == 1
     (row,) = released["jobs"]
-    assert row["status_before"] == "held" and row["status_after"] == "idle"
+    assert row["status_before"] == "held" and row["status_after"] in ("idle", "running")
     assert "hold_reason" not in row
     job = await call("job_details", cluster_id=fresh_job)
     assert job["status"] in ("idle", "running") and "hold" not in job

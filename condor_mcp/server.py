@@ -45,9 +45,12 @@ def _no_slots() -> str:
     )
 
 
+ClusterField = Field(ge=1, description="Cluster number, the part before the dot in 123.0")
+
+
 @mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
 def job_details(
-    cluster_id: Annotated[int, Field(ge=1, description="Cluster number, the part before the dot in 123.0")],
+    cluster_id: Annotated[int, ClusterField],
     proc_id: Annotated[int, Field(ge=0, description="Process number within the cluster, the part after the dot")] = 0,
 ) -> dict[str, Any]:
     """Describe one HTCondor job: status, where it is running, resources requested
@@ -91,8 +94,7 @@ def list_jobs(
     log.info("list_jobs owner=%s status=%s limit=%s", owner, status, limit)
     constraint, name = pool.owner_constraint(owner)
     counts = Counter(
-        classads.JOB_STATUS.get(get(ad, "JobStatus"), "unknown")
-        for _, ad in pool.query_jobs(constraint, ["JobStatus"])
+        classads.status_name(ad) for _, ad in pool.query_jobs(constraint, ["JobStatus"])
     )
     if status:
         constraint += f" && JobStatus == {classads.STATUS_CODE[status]}"
@@ -382,7 +384,6 @@ ACT = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
 # Takes a job out of the queue for good; a client should warn the user before calling.
 DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
-ClusterField = Field(ge=1, description="Cluster number, the part before the dot in 123.0")
 ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
 ReasonField = Field(
     min_length=1, max_length=200,
@@ -391,14 +392,12 @@ ReasonField = Field(
 _ACT_PROJECTION = ["ClusterId", "ProcId", "Owner", "JobStatus", "HoldReason"]
 
 
-def _status(ad: Any) -> str:
-    code = get(ad, "JobStatus")
-    return classads.JOB_STATUS.get(code, f"unknown({code})")
-
-
-def _act(action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reason: str) -> dict[str, Any]:
+def _act(
+    action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reason: str, missing_ok: bool = False
+) -> dict[str, Any]:
     """Apply one JobAction to a cluster or a single job after checking it belongs
-    to the configured user, and report each job's status before and after."""
+    to the configured user, and report each job's status before and after.
+    With missing_ok, a job that is not in the queue is reported rather than an error."""
     verb = action.name.lower()
     constraint = f"ClusterId == {cluster_id}"
     label = f"cluster {cluster_id}"
@@ -406,27 +405,27 @@ def _act(action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reaso
         constraint += f" && ProcId == {proc_id}"
         label = f"job {cluster_id}.{proc_id}"
     log.info("%s_job %s reason=%r", verb, label, reason)
+    title = label.capitalize()
     found = pool.query_jobs(constraint, _ACT_PROJECTION)
-    if not found and action == htcondor.JobAction.Remove:
-        # Removing twice is a no-op, the queue is already in the asked-for state.
-        log.info("  -> nothing to remove")
+    if not found and missing_ok:
+        log.info("  -> nothing to %s", verb)
         return {
             "action": verb, "reason": reason, "changed": 0, "jobs": [],
-            "note": f"Nothing to remove: {label} is not in the queue. It may already have been "
+            "note": f"Nothing to {verb}: {label} is not in the queue. It may already have been "
             "removed or finished, or the ID may be wrong.",
         }
     if not found:
         raise ToolError(
-            f"{label[0].upper()}{label[1:]} is not in the queue. It may have finished and "
+            f"{title} is not in the queue. It may have finished and "
             "left the queue, or the ID may be wrong. Try list_jobs to see what is queued."
         )
     names = sorted({name for name, _ in found})
     if len(names) > 1:
         raise ToolError(
-            f"{label[0].upper()}{label[1:]} exists on more than one schedd ({', '.join(names)}), "
+            f"{title} exists on more than one schedd ({', '.join(names)}), "
             "so the ID is ambiguous. Set CONDOR_MCP_SCHEDDS to the one that holds the job."
         )
-    others = sorted({get(ad, "Owner") for _, ad in found} - {settings.user})
+    others = sorted({get(ad, "Owner") or "<no owner>" for _, ad in found} - {settings.user})
     if others:
         raise ToolError(
             f"Refusing to {verb} {label}: it belongs to {', '.join(others)}, not {settings.user}. "
@@ -442,6 +441,8 @@ def _act(action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reaso
         result = schedd.act(action, f"{constraint} && {mine}", reason=(reason, None))
     except (htcondor.HTCondorException, RuntimeError) as exc:
         raise ToolError(f"The schedd ({name}) could not {verb} {label}: {exc}") from exc
+    if result is None:  # htcondor2 returns None instead of raising when the schedd sends no result
+        raise ToolError(f"The schedd ({name}) returned no result for {verb} {label}; try again.")
     changed = get(result, "TotalChangedAds", 0)
     if changed == 0 and get(result, "TotalPermissionDenied", 0):
         raise ToolError(
@@ -449,10 +450,16 @@ def _act(action: htcondor.JobAction, cluster_id: int, proc_id: int | None, reaso
             f"{getpass.getuser()}; only the job's owner or a queue superuser can change it."
         )
     after = {classads.job_id(ad): ad for _, ad in pool.query_jobs(constraint, _ACT_PROJECTION)}
+    # Only a remove can take credit for a job that is gone
+    gone = "removed" if action == htcondor.JobAction.Remove else "left the queue"
     rows = []
     for jid, old in before.items():
         new = after.get(jid)
-        row = {"job_id": jid, "status_before": _status(old), "status_after": _status(new) if new else "removed"}
+        row = {
+            "job_id": jid,
+            "status_before": classads.status_name(old),
+            "status_after": classads.status_name(new) if new else gone,
+        }
         if new is None:
             row["note"] = "left the queue"
         elif get(new, "JobStatus") == JobStatus.HELD:
@@ -511,7 +518,8 @@ def remove_job(
     every job in the cluster unless proc_id is given, and only on jobs the
     configured user owns. Returns each job's status before and after; a job that
     has already left the queue is reported as such rather than an error."""
-    return _act(htcondor.JobAction.Remove, cluster_id, proc_id, reason)
+    # Removing twice is a no-op: the queue is already in the asked-for state.
+    return _act(htcondor.JobAction.Remove, cluster_id, proc_id, reason, missing_ok=True)
 
 
 def main() -> None:

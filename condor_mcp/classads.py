@@ -117,6 +117,12 @@ def get(ad: classad.ClassAd, attr: str, default: Any = None) -> Any:
     return val
 
 
+def status_name(ad: classad.ClassAd) -> str:
+    """The job's status as the model sees it: "idle", "held", ... or "unknown(code)"."""
+    code = get(ad, "JobStatus")
+    return JOB_STATUS.get(code, f"unknown({code})")
+
+
 def command_line(ad: classad.ClassAd) -> str:
     args = get(ad, "Arguments") or get(ad, "Args")
     return " ".join(s for s in (get(ad, "Cmd"), args) if s)
@@ -179,7 +185,7 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
     out = {
         "job_id": job_id(ad),
         "owner": get(ad, "Owner"),
-        "status": JOB_STATUS.get(status_code, f"unknown({status_code})"),
+        "status": status_name(ad),
         "status_since": ts(get(ad, "EnteredCurrentStatus")),
         "command": command_line(ad),
         "submit_dir": get(ad, "Iwd"),
@@ -215,7 +221,7 @@ def compact_job(ad: classad.ClassAd) -> dict[str, Any]:
     row = {
         "job_id": job_id(ad),
         "owner": get(ad, "Owner"),
-        "status": JOB_STATUS.get(status_code, f"unknown({status_code})"),
+        "status": status_name(ad),
         "status_since": ts(get(ad, "EnteredCurrentStatus")),
         "command": command_line(ad),
         "submitted_at": ts(get(ad, "QDate")),
