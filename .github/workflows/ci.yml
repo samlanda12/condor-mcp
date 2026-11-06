@@ -20,6 +20,9 @@ jobs:
         # The tests submit to a live pool, so run inside the HTCondor mini image
         container: htcondor/mini:25.13.2-el9
         timeout-minutes: 20
+        # Skip log warnings
+        env:
+            UV_LINK_MODE: copy
         steps:
             - name: checkout the repo
               uses: actions/checkout@v5
@@ -50,7 +53,7 @@ jobs:
             - name: set up python
               uses: actions/setup-python@v6
               with:
-                  python-version: '3.12'
+                  python-version-file: .python-version
 
             - name: install uv
               run: python -m pip install uv
