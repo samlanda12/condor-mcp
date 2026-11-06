@@ -72,16 +72,27 @@ def live_jobs():
         schedd.act(htcondor.JobAction.Remove, f"{TAG} == true")
 
 
+SLEEP_JOB = dict(executable="/bin/sleep", arguments="600", memory_mb=64, disk_mb=10, extra={f"+{TAG}": "true"})
+
+
 @pytest.fixture(scope="session")
 async def submitted_job(anyio_backend):
     """A sleep job drafted with draft_submit and queued with submit_job."""
-    draft = await call(
-        "draft_submit", executable="/bin/sleep", arguments="600", memory_mb=64, disk_mb=10,
-        extra={f"+{TAG}": "true"},
-    )
+    draft = await call("draft_submit", **SLEEP_JOB)
     assert draft["submittable"] and draft["warnings"] == [], draft
     out = await call("submit_job", submit_text=draft["submit_text"])
     try:
         yield {"cluster": out["cluster_id"], "submit_text": draft["submit_text"], "result": out}
+    finally:
+        htcondor.Schedd().act(htcondor.JobAction.Remove, f"ClusterId == {out['cluster_id']}")
+
+
+@pytest.fixture
+async def fresh_job(submitted_job):
+    """A new cluster from the same draft, for tests that change a job's state.
+    Removed afterwards directly, not through a tool under test."""
+    out = await call("submit_job", submit_text=submitted_job["submit_text"])
+    try:
+        yield out["cluster_id"]
     finally:
         htcondor.Schedd().act(htcondor.JobAction.Remove, f"ClusterId == {out['cluster_id']}")

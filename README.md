@@ -2,11 +2,12 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that puts an
 [HTCondor](https://htcondor.readthedocs.io/en/latest/) pool behind a natural-language
-interface. It lets an AI assistant answer questions like "why isn't my job running?" by
-calling tools that query the pool through the
+interface. It lets an AI assistant answer questions like "why isn't my job running?" and
+act on the answer: draft and submit jobs, and hold, release, or remove them. The tools
+work through the
 [htcondor2 Python bindings](https://htcondor.readthedocs.io/en/latest/apis/python-bindings/).
 
-Built with [FastMCP](https://gofastmcp.com/) ([repo](https://github.com/jlowin/fastmcp)) for Syracuse University's OrangeGrid
+Built with [FastMCP](https://gofastmcp.com/) for Syracuse University's OrangeGrid
 cluster. Example submit files to test against live in
 [OrangeGridExamples](https://github.com/SyracuseUniversity/OrangeGridExamples).
 
@@ -16,7 +17,7 @@ These are from a Claude Code session on a one-machine
 [htcondor/mini](https://hub.docker.com/r/htcondor/mini) dev pool, with a few jobs queued
 ahead of time: one running, one that will never match because it asks for 128 GB on a
 32 GB machine, and one on hold because its input file doesn't exist. Any MCP client
-works; Claude Code is shown because it runs on the submit host over stdio.
+works.
 
 Asking why a job is stuck:
 
@@ -65,8 +66,8 @@ Asking why a job is stuck:
 
 </details>
 
-Drafting a job. Nothing is queued yet; `draft_submit` builds the file and checks it
-against the pool, which here has no GPUs:
+Next, a draft. `draft_submit` writes the submit file and checks it against the pool
+without queuing anything, and this pool has no GPUs:
 
 <img src="docs/images/screenshot-draft-job.png" width="720" alt="A drafted submit file with a warning that no slot has a GPU">
 
@@ -116,84 +117,8 @@ against the pool, which here has no GPUs:
 
 </details>
 
-Submitting it. `submit_job` changes the queue, so Claude Code asks first and shows the
-exact submit text it is about to send:
-
-<img src="docs/images/screenshot-submit-prompt.png" width="720" alt="The permission prompt before submit_job, showing the submit text">
-
-<details>
-<summary>Transcript</summary>
-
-```text
-❯ Drop the GPU and submit it.
-
-● Submitting the same job without the GPU request.
-
-  Calling condor…
-
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Tool use
- condor — Submit Job Tool: (MCP)
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- submit_text:
-   │ executable              = /home/user/jobs/analyze.py
-   │ arguments               = data.csv
-   │ transfer_input_files    = /home/user/jobs/data.csv
-   │ should_transfer_files   = YES
-   │ when_to_transfer_output = ON_EXIT
-   │ request_cpus            = 1
-   │ request_memory          = 4096MB
-   │ initialdir              = /home/user/jobs
-   │ output                  = $(ClusterId).$(ProcId).out
-   │ error                   = $(ClusterId).$(ProcId).err
-   │ log                     = $(ClusterId).log
-   │
-   │ queue 1
-   │
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- About the condor — Submit Job Tool:
- │ Queue jobs from a submit description, given as text or as the path of a
- │ submit file on the submit host. Jobs run as the user this server runs as,…
- (ctrl+o to expand description)
-
- Do you want to proceed?
- ❯ 1. Yes
-   2. Yes, and don't ask again for condor — Submit Job commands in ~/project
-   3. No
-
- Esc to cancel · Tab to amend
-```
-
-</details>
-
-After approving:
-
-<img src="docs/images/screenshot-submit-result.png" width="720" alt="The job queued as 116.0 and running">
-
-<details>
-<summary>Transcript</summary>
-
-```text
-❯ Drop the GPU and submit it.
-
-● Submitting the same job without the GPU request.
-
-  Called condor 2 times
-
-● Submitted as job 116.0, and it started running within a second of entering the queue.
-
-  - Running on slot1_2 of the pool's one machine, with 1 CPU and 4 GB of memory and no GPU request.
-  - Output lands in /home/user/jobs as 116.0.out and 116.0.err, with the event log in 116.log.
-  - Input data.csv was transferred to the execute machine successfully.
-
-  Your queue now has this job and the sleep job running, the 128 GB train.py job still idle, and job 3.0 still held on
-  its missing input file. Ask for details on 116.0 whenever you want to check progress or read its output once it
-  finishes.
-
-✻ Brewed for 8s · done 1:28 PM
-```
-
-</details>
+The full session, including submitting this job and then holding, releasing, and
+removing jobs, is in [docs/examples.md](docs/examples.md).
 
 ## Requirements
 
@@ -247,10 +172,9 @@ Other clients take the same command and args in their own config format. Put any
 
 ## Tools
 
-Jobs that have finished and left the queue are invisible to these tools; job history
-comes in a later stage.
+These tools only see jobs that are still in the queue. Job history isn't supported yet.
 
-| Tool | What it answers |
+| Tool | What it does |
 | --- | --- |
 | `job_details(cluster_id, proc_id=0)` | Everything about one job: status, where it runs, requested vs used resources, input/output files, and the hold reason in plain language if it is held. |
 | `list_jobs(owner="me", status=None, limit=50)` | One line per job plus a count of the owner's jobs by status. `owner` is `me`, `all`, or a username. |
@@ -258,15 +182,31 @@ comes in a later stage.
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
 | `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
 | `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Submits to the first schedd in `CONDOR_MCP_SCHEDDS`. Returns the cluster id, job count, and one `list_jobs` row per job. |
+| `hold_job(cluster_id, reason, proc_id=None)` | Puts a job on hold, or every job in the cluster if `proc_id` is omitted. A running job is stopped; it stays in the queue until released. The reason is recorded on the job. Returns each job's status before and after. |
+| `release_job(cluster_id, reason, proc_id=None)` | Releases a held job back to idle so it can be matched again. A job whose hold cause is still present goes straight back on hold. Returns each job's status before and after. |
+| `remove_job(cluster_id, reason, proc_id=None, all_procs=False)` | Removes a job from the queue for good: a running job is killed, an idle or held one is dropped. Takes `proc_id` for one job or `all_procs=True` for the whole cluster. No undo. Output already written stays on disk. |
 
 ### Read-only and write tools
 
-Every tool except `submit_job` is read-only: `draft_submit` writes nothing and contacts
-no schedd. `submit_job` queues jobs as the user the server runs as, and is marked
-non-read-only in its MCP annotations so clients can ask the user before calling it. It
-refuses `include` lines, which read files or run a shell command at submit time, and
-`queue ... |` statements, which run one, along with a macro in the `queue` line or a second
-`queue` statement, which could hide one. It never touches jobs already in the queue.
+`job_details`, `list_jobs`, `hold_reasons`, `pool_status`, and `draft_submit` are
+read-only: `draft_submit` writes nothing and contacts no schedd. The rest change the queue
+and are marked non-read-only in their MCP annotations so clients can ask the user before
+calling them.
+
+`submit_job` queues jobs as the user the server runs as. Because some submit syntax can
+run commands at submit time, it refuses:
+
+- `include` lines, which read files or run a shell command
+- `queue ... |` statements, which run a command
+- macros in the `queue` line and more than one `queue` statement, since either could
+  hide one of the above
+
+`hold_job`, `release_job`, and `remove_job` act only on jobs owned by the configured user
+(`CONDOR_MCP_USER`) and refuse anyone else's, before HTCondor's own permission check.
+Each takes a reason, which HTCondor records on the job, and reports what changed; a job
+already in the requested state is left alone. `remove_job` is the one tool marked destructive in its annotations: a
+removed job cannot be brought back, only resubmitted. It is also the one tool that will not
+act on a whole cluster by default: it needs `proc_id` or an explicit `all_procs=True`.
 
 ## Configuration
 
@@ -290,14 +230,13 @@ expected.
 
 ## Tests
 
-The tests run against a live pool and need permission to submit. They submit a sleep job
-and a job that goes on hold with a missing input file, wait for both, check every tool,
-queue a third through `draft_submit` and `submit_job`, and remove only the jobs they
-submitted (tagged `CondorMcpTest`). Drafts and submitted jobs use a work directory
-under the system temp dir. Don't run them against a production schedd you
-don't own. They also assume a small development pool: a single
-execute machine with no GPUs, as in the container below. On a bigger pool the server
-works but the `pool_status` tests fail.
+The tests submit real jobs to a live pool, so they need permission to submit. They tag
+their jobs `CondorMcpTest`, remove only those when they finish, and keep their files in a
+temp directory. Don't run them against a production schedd you don't own.
+
+They also expect a small development pool with one execute machine and no GPUs, like the
+container below. On a bigger pool the `pool_status` tests fail even though the server
+works.
 
 ```sh
 uv run pytest

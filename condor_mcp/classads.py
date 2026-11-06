@@ -71,7 +71,7 @@ JOB_PROJECTION = [
     "QDate", "JobStartDate", "CompletionDate", "RemoteHost",
     "RequestCpus", "RequestMemory", "RequestDisk", "TransferInputSizeMB",
     "MemoryUsage", "RemoteWallClockTime", "NumJobStarts",
-    "HoldReason", "HoldReasonCode", "HoldReasonSubCode",
+    "HoldReason", "HoldReasonCode", "HoldReasonSubCode", "ReleaseReason",
     "ExitCode", "ExitBySignal", "ExitSignal",
     "Out", "Err", "UserLog", "TransferInput",
 ]
@@ -115,6 +115,12 @@ def get(ad: classad.ClassAd, attr: str, default: Any = None) -> Any:
     if val is None or isinstance(val, classad.Value):
         return default
     return val
+
+
+def status_name(ad: classad.ClassAd) -> str:
+    """The job's status as the model sees it: "idle", "held", ... or "unknown(code)"."""
+    code = get(ad, "JobStatus")
+    return JOB_STATUS.get(code, f"unknown({code})")
 
 
 def command_line(ad: classad.ClassAd) -> str:
@@ -179,7 +185,7 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
     out = {
         "job_id": job_id(ad),
         "owner": get(ad, "Owner"),
-        "status": JOB_STATUS.get(status_code, f"unknown({status_code})"),
+        "status": status_name(ad),
         "status_since": ts(get(ad, "EnteredCurrentStatus")),
         "command": command_line(ad),
         "submit_dir": get(ad, "Iwd"),
@@ -196,6 +202,8 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
     }
     if status_code == JobStatus.HELD:
         out["hold"] = hold_info(ad)
+    if get(ad, "ReleaseReason"):  # stays on the ad after a release, whatever the job did next
+        out["last_release_reason"] = get(ad, "ReleaseReason")
     if status_code == JobStatus.COMPLETED:
         out["exit"] = {
             "code": get(ad, "ExitCode"),
@@ -215,7 +223,7 @@ def compact_job(ad: classad.ClassAd) -> dict[str, Any]:
     row = {
         "job_id": job_id(ad),
         "owner": get(ad, "Owner"),
-        "status": JOB_STATUS.get(status_code, f"unknown({status_code})"),
+        "status": status_name(ad),
         "status_since": ts(get(ad, "EnteredCurrentStatus")),
         "command": command_line(ad),
         "submitted_at": ts(get(ad, "QDate")),
