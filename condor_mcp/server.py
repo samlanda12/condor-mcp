@@ -40,6 +40,17 @@ def _job_projection(base: list[str]) -> list[str]:
     return base + [a for a in settings.job_attrs if a not in base]
 
 
+def _find_job(cluster_id: int, proc_id: int, projection: list[str]) -> tuple[str, classad.ClassAd, bool]:
+    """pool.find_job, with a job in neither the queue nor the history as a ToolError."""
+    found = pool.find_job(cluster_id, proc_id, projection)
+    if found is None:
+        raise ToolError(
+            f"Job {cluster_id}.{proc_id} is in neither the queue nor the schedd history. The ID "
+            "may be wrong, or the job is old enough that the schedd has dropped it from its history."
+        )
+    return found
+
+
 def _no_slots() -> str:
     return (
         "The collector returned no slots. Either no execute machines are "
@@ -56,26 +67,17 @@ def job_details(
     cluster_id: Annotated[int, ClusterField],
     proc_id: Annotated[int, Field(ge=0, description="Process number within the cluster, the part after the dot")] = 0,
 ) -> dict[str, Any]:
-    """Describe one HTCondor job: status, where it is running, resources requested
-    vs used, input and output file locations, and, if it is held, the hold reason
-    in plain language. Use this when a user asks about a specific job by ID.
-    Only jobs still in the queue are visible; for a job that has completed or been
-    removed and left the queue, use job_history."""
+    """Describe one HTCondor job, queued or finished: status, where it is running or
+    ran, resources requested vs used, input and output file locations, the hold
+    reason in plain language if it is held, and the exit code or remove reason once
+    it has ended. Use this when a user asks about a specific job by ID. A job that
+    has left the queue is read from the schedd history, and in_queue is false."""
     log.info("job_details cluster_id=%s proc_id=%s", cluster_id, proc_id)
-    found = pool.query_jobs(
-        f"ClusterId == {cluster_id} && ProcId == {proc_id}",
-        _job_projection(classads.JOB_PROJECTION),
-        limit=1,
-    )
-    if not found:
-        raise ToolError(
-            f"Job {cluster_id}.{proc_id} is not in the queue. It may have finished "
-            f"and left the queue (job_history with cluster_id={cluster_id} shows how it "
-            "ended), or the ID may be wrong. Try list_jobs to see what is queued."
-        )
-    schedd, ad = found[0]
-    summary = pool.tag_schedd(classads.summarize_job(ad, settings.job_attrs), schedd)
-    log.info("  -> job %s is %s", summary["job_id"], summary["status"])
+    schedd, ad, in_queue = _find_job(cluster_id, proc_id, _job_projection(classads.JOB_PROJECTION))
+    summary = classads.summarize_job(ad, settings.job_attrs)
+    summary["in_queue"] = in_queue
+    pool.tag_schedd(summary, schedd)
+    log.info("  -> job %s is %s, in_queue=%s", summary["job_id"], summary["status"], in_queue)
     return summary
 
 
@@ -172,9 +174,9 @@ def job_history(
     """List jobs that have left the queue, newest first: completed ones with their
     exit code, removed ones with the remove reason. Each row also gives wall time,
     memory and disk used versus requested, and the machine the job ran on. Use this
-    for "did my job finish", "why did it fail", "how much memory did it use", or a
-    job that job_details no longer finds. Jobs still in the queue are not listed;
-    use list_jobs or job_details for those."""
+    for "did my job finish", "why did it fail", or "how much memory did it use"
+    across recent jobs. Jobs still in the queue are not listed; use list_jobs for
+    those. job_details covers one job by ID whether queued or finished."""
     log.info("job_history owner=%s cluster_id=%s limit=%s", owner, cluster_id, limit)
     constraint, name = pool.owner_constraint(owner)
     if cluster_id is not None:
@@ -267,13 +269,7 @@ def job_output(
     running job's stdout and stderr reach the submit host only when it ends;
     until then the log shows its progress."""
     log.info("job_output cluster_id=%s proc_id=%s which=%s tail_lines=%s", cluster_id, proc_id, which, tail_lines)
-    found = pool.find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
-    if found is None:
-        raise ToolError(
-            f"Job {cluster_id}.{proc_id} is in neither the queue nor the schedd history. The ID "
-            "may be wrong, or the job is old enough that the schedd has dropped it from its history."
-        )
-    schedd, ad, in_queue = found
+    schedd, ad, in_queue = _find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
 
     if get(ad, "Owner") != settings.user:
         raise ToolError(

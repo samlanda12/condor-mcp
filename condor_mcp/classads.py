@@ -75,7 +75,7 @@ JOB_PROJECTION = [
     "RequestCpus", "RequestMemory", "RequestDisk", "TransferInputSizeMB",
     "MemoryUsage", "RemoteWallClockTime", "NumJobStarts",
     "HoldReason", "HoldReasonCode", "HoldReasonSubCode", "ReleaseReason",
-    "ExitCode", "ExitBySignal", "ExitSignal",
+    "ExitCode", "ExitBySignal", "ExitSignal", "LastRemoteHost", "RemoveReason",
     *OUTPUT_ATTRS.values(), "TransferInput",
 ]
 
@@ -227,8 +227,12 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
         out["hold"] = hold_info(ad)
     if get(ad, "ReleaseReason"):  # stays on the ad after a release, whatever the job did next
         out["last_release_reason"] = get(ad, "ReleaseReason")
+    if status_code in (JobStatus.COMPLETED, JobStatus.REMOVED):
+        out["ran_on"] = get(ad, "LastRemoteHost")
     if status_code == JobStatus.COMPLETED:
         out["exit"] = {**exit_info(ad), "completed_at": ts(get(ad, "CompletionDate"))}
+    elif status_code == JobStatus.REMOVED:
+        out["remove_reason"] = get(ad, "RemoveReason")
     extra = site_attrs(ad, extra_attrs)
     if extra:
         out["site"] = extra
