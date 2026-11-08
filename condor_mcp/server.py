@@ -204,8 +204,8 @@ def job_history(
 
 
 OutputKind = Literal["stdout", "stderr", "log"]
-# Job ad attribute and submit command for each kind of output
-_OUTPUT_FILES = {"stdout": ("Out", "output"), "stderr": ("Err", "error"), "log": ("UserLog", "log")}
+# Submit command that names the file of each kind of output
+_SUBMIT_COMMANDS = {"stdout": "output", "stderr": "error", "log": "log"}
 # The most of a file job_output returns, however many lines were asked for
 MAX_OUTPUT_BYTES = 64 * 1024
 
@@ -281,7 +281,7 @@ def job_output(
             f"{get(ad, 'Owner') or '<no owner>'}, not {settings.user}. This server only reads "
             "output of jobs owned by the user it runs as (CONDOR_MCP_USER)."
         )
-    attr, command = _OUTPUT_FILES[which]
+    attr, command = classads.OUTPUT_ATTRS[which], _SUBMIT_COMMANDS[which]
     out: dict[str, Any] = {
         "job_id": classads.job_id(ad), "status": classads.status_name(ad), "in_queue": in_queue, "which": which,
     }
