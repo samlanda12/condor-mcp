@@ -2,7 +2,8 @@
 
 Submits one job that runs (sleep) and one that goes on hold (missing input
 file, hold code 13), waits for both states, and removes them afterwards.
-A third job is drafted and queued through the submit tools. Only jobs tagged
+A third job is drafted and queued through the submit tools, and a fourth runs to
+completion so it can be read back from the history. Only jobs tagged
 CondorMcpTest are touched. Drafted jobs use a work directory under the system
 temp dir."""
 
@@ -14,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anyio
 import htcondor2 as htcondor
 import pytest
 
@@ -85,6 +87,35 @@ async def submitted_job(anyio_backend):
         yield {"cluster": out["cluster_id"], "submit_text": draft["submit_text"], "result": out}
     finally:
         htcondor.Schedd().act(htcondor.JobAction.Remove, f"ClusterId == {out['cluster_id']}")
+
+
+PRINT_SCRIPT = """#!/bin/sh
+for i in 1 2 3 4 5; do echo "line $i"; done
+echo "to stderr" >&2
+exit 3
+"""
+
+
+@pytest.fixture(scope="session")
+async def finished_job(anyio_backend):
+    """A drafted job that prints five lines and one stderr line, exits 3, and has
+    left the queue. Waits on the history directly, not through a tool under test."""
+    script = WORKDIR / "condor-mcp-print.sh"
+    script.write_text(PRINT_SCRIPT)
+    script.chmod(0o755)
+    draft = await call("draft_submit", executable=str(script), memory_mb=64, disk_mb=10, extra={f"+{TAG}": "true"})
+    assert draft["submittable"], draft
+    cluster = (await call("submit_job", submit_text=draft["submit_text"]))["cluster_id"]
+    schedd = htcondor.Schedd()
+    try:
+        deadline = time.monotonic() + 180
+        while not schedd.history(f"ClusterId == {cluster}", ["JobStatus"], match=1):
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"cluster {cluster} did not reach the history within 180s")
+            await anyio.sleep(2)
+        yield cluster
+    finally:
+        schedd.act(htcondor.JobAction.Remove, f"ClusterId == {cluster}")
 
 
 @pytest.fixture

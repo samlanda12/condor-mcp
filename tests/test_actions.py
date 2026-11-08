@@ -60,6 +60,10 @@ async def test_hold_release_remove(fresh_job):
     (row,) = removed["jobs"]
     assert row["status_before"] in ("idle", "running") and row["status_after"] == "removed"
     await _wait_until_gone(fresh_job)
+    history = await call("job_history", cluster_id=fresh_job)
+    (row,) = history["jobs"]
+    assert row["status"] == "removed" and row["remove_reason"] == f"done with it (by user {ME})"
+    assert "exit" not in row
 
     again = await call("remove_job", cluster_id=fresh_job, all_procs=True, reason="a second time")
     assert again["changed"] == 0 and again["jobs"] == []
