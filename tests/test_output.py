@@ -64,6 +64,17 @@ async def test_job_output_refuses_another_users_job(finished_job, monkeypatch):
         await call("job_output", cluster_id=finished_job)
 
 
+async def test_job_output_refuses_an_id_on_two_schedds(finished_job, monkeypatch):
+    """The same schedd under two names stands in for two schedds with colliding IDs."""
+    import htcondor2 as htcondor
+
+    from condor_mcp import pool
+
+    monkeypatch.setattr(pool, "schedds", lambda: iter([("a", htcondor.Schedd()), ("b", htcondor.Schedd())]))
+    with pytest.raises(ToolError, match=rf"Job {finished_job}\.0 exists on more than one schedd \(a, b\)"):
+        await call("job_output", cluster_id=finished_job)
+
+
 def test_tail_of_one_long_line(tmp_path):
     """A last line longer than the cap comes back as its final MAX_OUTPUT_BYTES, marked cut."""
     from condor_mcp.server import MAX_OUTPUT_BYTES, _tail

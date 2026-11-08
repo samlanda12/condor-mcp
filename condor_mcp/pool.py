@@ -144,6 +144,23 @@ def query_jobs(
     ]
 
 
+def query_schedd_history(
+    name: str,
+    schedd: htcondor.Schedd,
+    constraint: str,
+    projection: list[str],
+    limit: int,
+) -> list[classad.ClassAd]:
+    """Read one schedd's job history, turning a failure into a ToolError."""
+    try:
+        return list(schedd.history(constraint, projection, match=limit))
+    except htcondor.HTCondorException as exc:
+        raise ToolError(
+            f"Could not read the job history of the schedd ({name}): {exc}. Is the schedd "
+            "up? Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
+        ) from exc
+
+
 def query_history(
     constraint: str,
     projection: list[str],
@@ -154,16 +171,11 @@ def query_history(
 
     Returns (schedd name, ad) pairs, most recently finished first. The limit applies
     per schedd, so the merged list can be longer; callers trim it."""
-    found: list[tuple[str, classad.ClassAd]] = []
-    for name, schedd in schedds():
-        try:
-            ads = schedd.history(constraint, projection, match=limit)
-        except htcondor.HTCondorException as exc:
-            raise ToolError(
-                f"Could not read the job history of the schedd ({name}): {exc}. Is the schedd "
-                "up? Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
-            ) from exc
-        found.extend((name, ad) for ad in ads)
+    found = [
+        (name, ad)
+        for name, schedd in schedds()
+        for ad in query_schedd_history(name, schedd, constraint, projection, limit)
+    ]
     # Each schedd answers newest first; the sort interleaves several schedds the same way
     found.sort(key=lambda pair: get(pair[1], "EnteredCurrentStatus", 0), reverse=True)
     return found
@@ -174,15 +186,26 @@ def find_job(
 ) -> tuple[str, classad.ClassAd, bool] | None:
     """One job's ad from the queue or, once it has left the queue, from the history.
 
-    Returns (schedd name, ad, whether it is still in the queue), or None if neither has it."""
+    Returns (schedd name, ad, whether it is still in the queue), or None if neither has it.
+    Cluster IDs are only unique within one schedd, so every schedd is checked and an ID
+    found on more than one is refused rather than guessed."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
-    queued = query_jobs(constraint, projection, limit=1)
-    if queued:
-        return (*queued[0], True)
-    finished = query_history(constraint, projection, limit=1)
-    if finished:
-        return (*finished[0], False)
-    return None
+    found: list[tuple[str, classad.ClassAd, bool]] = []
+    for name, schedd in schedds():
+        queued = query_schedd(name, schedd, constraint, projection, limit=1)
+        if queued:
+            found.append((name, queued[0], True))
+            continue
+        finished = query_schedd_history(name, schedd, constraint, projection, limit=1)
+        if finished:
+            found.append((name, finished[0], False))
+    if len(found) > 1:
+        raise ToolError(
+            f"Job {cluster_id}.{proc_id} exists on more than one schedd "
+            f"({', '.join(name for name, _, _ in found)}), so the ID is ambiguous. "
+            "Set CONDOR_MCP_SCHEDDS to the one that holds the job."
+        )
+    return found[0] if found else None
 
 
 def query_slots(projection: list[str], constraint: str | None = None) -> list[classad.ClassAd]:
