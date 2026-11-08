@@ -43,6 +43,13 @@ async def test_job_history_missing_cluster():
     out = await call("job_history", cluster_id=999999)
     assert out["jobs"] == [] and out["truncated"] is False
     assert out["note"].startswith(f"Cluster 999999 is not in the history for {ME}.")
+    assert "try owner='all'" in out["note"]
+
+
+async def test_job_history_missing_cluster_for_anyone():
+    out = await call("job_history", owner="all", cluster_id=999999)
+    assert out["note"].startswith("Cluster 999999 is not in the history for anyone.")
+    assert "try owner='all'" not in out["note"]
 
 
 async def test_job_history_other_owner():

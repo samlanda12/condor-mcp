@@ -193,11 +193,11 @@ def job_history(
         if cluster_id is None:
             out["note"] = f"No finished jobs in the history {who}."
         else:
+            someone_else = " the job may belong to someone else (try owner='all')," if name else ""
             out["note"] = (
                 f"Cluster {cluster_id} is not in the history {who}. If it is still queued, "
-                "job_details shows it. Otherwise the ID may be wrong, the job may belong to "
-                "someone else (try owner='all'), or it is old enough that the schedd has "
-                "dropped it from its history."
+                f"job_details shows it. Otherwise the ID may be wrong,{someone_else} or it is "
+                "old enough that the schedd has dropped it from its history."
             )
     log.info("  -> %d finished jobs", len(rows))
     return out
@@ -224,21 +224,25 @@ def _tail(path: Path, lines: int) -> tuple[str, int, bool]:
     return "\n".join(parts[-lines:]), size, bool(start) or len(parts) > lines
 
 
-def _missing_output_note(ad: classad.ClassAd, which: str, in_queue: bool, path: Path) -> str:
-    """Why a job's output file is not on the submit host, most likely reason first."""
-    if which != "log":  # the schedd writes the log at submit, so only stdout/stderr can be pending
-        if not get(ad, "NumJobStarts", 0):
-            if in_queue:
-                return f"No {which} yet: the job is {classads.status_name(ad)} and has not started."
-            return f"No {which}: the job never started, so it wrote none."
-        streamed = get(ad, "StreamOut" if which == "stdout" else "StreamErr", False)
-        if in_queue and get(ad, "ShouldTransferFiles", "YES") != "NO" and not streamed:
-            return (
-                f"No {which} yet: the job is {classads.status_name(ad)}, and with file transfer "
-                f"HTCondor copies its {which} back to the submit host only when the job ends. "
-                "which='log' shows its progress meanwhile."
-            )
-    return f"{path} does not exist. It may have been moved or deleted since the job wrote it."
+def _pending_output_note(ad: classad.ClassAd, which: str, in_queue: bool) -> str | None:
+    """Why a job's stdout or stderr is missing or empty on the submit host, if its state
+    explains it. None for the log, which the schedd writes at submit."""
+    if which == "log":
+        return None
+    # A completed or removed job can stay in the queue (leave_in_queue), but it has ended
+    active = in_queue and get(ad, "JobStatus") not in (JobStatus.COMPLETED, JobStatus.REMOVED)
+    if not get(ad, "NumJobStarts", 0):
+        if active:
+            return f"No {which} yet: the job is {classads.status_name(ad)} and has not started."
+        return f"No {which}: the job never started, so it wrote none."
+    streamed = get(ad, "StreamOut" if which == "stdout" else "StreamErr", False)
+    if active and get(ad, "ShouldTransferFiles", "YES") != "NO" and not streamed:
+        return (
+            f"No {which} yet: the job is {classads.status_name(ad)}, and with file transfer "
+            f"HTCondor copies its {which} back to the submit host only when the job ends. "
+            "which='log' shows its progress meanwhile."
+        )
+    return None
 
 
 @mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
@@ -286,20 +290,31 @@ def job_output(
         )
         log.info("  -> no %s file", which)
         return out
-    path = Path(get(ad, "Iwd") or "") / str(name)  # an absolute name replaces Iwd
+    iwd = get(ad, "Iwd")
+    if not iwd and not Path(str(name)).is_absolute():
+        out["note"] = (
+            f"The job's {which} file is {name}, a relative path, but the job ad records no "
+            "submit directory (Iwd) to resolve it against, so it cannot be located."
+        )
+        log.info("  -> no Iwd for %s", name)
+        return out
+    path = Path(iwd or "") / str(name)  # an absolute name replaces Iwd
     out["path"] = str(path)
     try:
         text, size, truncated = _tail(path, tail_lines)
     except FileNotFoundError:
         out["text"] = ""
-        out["note"] = _missing_output_note(ad, which, in_queue, path)
+        out["note"] = _pending_output_note(ad, which, in_queue) or (
+            f"{path} does not exist. It may have been moved or deleted since the job wrote it."
+        )
         log.info("  -> %s missing", path)
         return out
     except OSError as exc:  # permissions, a directory, ...
         raise ToolError(f"Could not read the job's {which} at {path}: {exc}") from exc
     out.update(text=text, size_bytes=size, truncated=truncated)
     if not size:
-        out["note"] = f"{path} is empty."
+        # condor_submit creates stdout and stderr empty at submit, so empty can mean pending
+        out["note"] = _pending_output_note(ad, which, in_queue) or f"{path} is empty."
     log.info("  -> %d bytes of %s", len(text), path)
     return out
 

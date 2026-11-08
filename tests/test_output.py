@@ -43,6 +43,40 @@ async def test_job_output_before_it_comes_back(submitted_job):
     assert out["note"].startswith("No stdout yet: the job is ")
 
 
+async def test_job_output_empty_before_it_comes_back(fresh_job):
+    """condor_submit creates stdout empty at submit; the bindings do not, so make it here."""
+    out_file = WORKDIR / f"{fresh_job}.0.out"
+    out_file.touch()
+    try:
+        out = await call("job_output", cluster_id=fresh_job)
+    finally:
+        out_file.unlink()
+    assert out["size_bytes"] == 0 and out["note"].startswith("No stdout yet: the job is ")
+
+
+def test_no_pending_note_once_the_job_has_ended():
+    """A completed job left in the queue is done, so a missing stdout is not on its way."""
+    import classad2 as classad
+
+    from condor_mcp.server import _pending_output_note
+
+    ad = classad.ClassAd({"JobStatus": 4, "NumJobStarts": 1, "ShouldTransferFiles": "YES"})
+    assert _pending_output_note(ad, "stdout", in_queue=True) is None
+    ad["JobStatus"] = 2
+    assert _pending_output_note(ad, "stdout", in_queue=True).startswith("No stdout yet: the job is running")
+
+
+async def test_job_output_relative_path_without_iwd(monkeypatch):
+    import classad2 as classad
+
+    from condor_mcp import pool
+
+    ad = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "Owner": pool.settings.user, "JobStatus": 4, "Out": "job.out"})
+    monkeypatch.setattr(pool, "find_job", lambda *args: ("local", ad, False))
+    out = await call("job_output", cluster_id=7)
+    assert "path" not in out and "records no submit directory (Iwd)" in out["note"]
+
+
 async def test_job_output_discarded(live_jobs):
     # Submitted without an output command, so HTCondor sends stdout to /dev/null
     out = await call("job_output", cluster_id=live_jobs["running"])
