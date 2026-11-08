@@ -64,6 +64,9 @@ HOLD_CODES = {
     48: "the site's shadow prepare-job hook asked for the job to be held",
 }
 
+# Job ad attribute holding the file of each kind of output
+OUTPUT_ATTRS = {"stdout": "Out", "stderr": "Err", "log": "UserLog"}
+
 # Attributes we ask the schedd for when describing one job in full
 JOB_PROJECTION = [
     "ClusterId", "ProcId", "Owner", "JobStatus", "EnteredCurrentStatus",
@@ -72,8 +75,8 @@ JOB_PROJECTION = [
     "RequestCpus", "RequestMemory", "RequestDisk", "TransferInputSizeMB",
     "MemoryUsage", "RemoteWallClockTime", "NumJobStarts",
     "HoldReason", "HoldReasonCode", "HoldReasonSubCode", "ReleaseReason",
-    "ExitCode", "ExitBySignal", "ExitSignal",
-    "Out", "Err", "UserLog", "TransferInput",
+    "ExitCode", "ExitBySignal", "ExitSignal", "LastRemoteHost", "RemoveReason",
+    *OUTPUT_ATTRS.values(), "TransferInput",
 ]
 
 # Enough for one line per job in a listing
@@ -92,7 +95,7 @@ HELD_PROJECTION = [
 # A job that has left the queue, as read from the schedd history
 HISTORY_PROJECTION = [
     "ClusterId", "ProcId", "Owner", "JobStatus", "EnteredCurrentStatus",
-    "Cmd", "Args", "Arguments", "QDate", "CompletionDate", "LastRemoteHost",
+    "Cmd", "Args", "Arguments", "QDate", "LastRemoteHost",
     "RemoteWallClockTime", "NumJobStarts",
     "RequestMemory", "MemoryUsage", "ResidentSetSize", "RequestDisk", "DiskUsage",
     "ExitCode", "ExitBySignal", "ExitSignal", "RemoveReason", "LastHoldReason",
@@ -100,7 +103,7 @@ HISTORY_PROJECTION = [
 
 # What job_output needs to find a job's files and explain a missing one
 OUTPUT_PROJECTION = [
-    "ClusterId", "ProcId", "Owner", "JobStatus", "NumJobStarts", "Iwd", "Out", "Err", "UserLog",
+    "ClusterId", "ProcId", "Owner", "JobStatus", "NumJobStarts", "Iwd", *OUTPUT_ATTRS.values(),
     "ShouldTransferFiles", "StreamOut", "StreamErr",
 ]
 
@@ -164,12 +167,8 @@ def requested(ad: classad.ClassAd) -> dict[str, Any]:
 
 
 def job_files(ad: classad.ClassAd) -> dict[str, Any]:
-    return {
-        "stdout": get(ad, "Out"),
-        "stderr": get(ad, "Err"),
-        "log": get(ad, "UserLog"),
-        "transfer_input": split_files(get(ad, "TransferInput")),
-    }
+    files = {kind: get(ad, attr) for kind, attr in OUTPUT_ATTRS.items()}
+    return {**files, "transfer_input": split_files(get(ad, "TransferInput"))}
 
 
 SLOT_RESOURCES = ("Cpus", "Memory", "Disk", "GPUs")
@@ -192,6 +191,15 @@ def hold_info(ad: classad.ClassAd) -> dict[str, Any]:
         "code": code,
         "subcode": get(ad, "HoldReasonSubCode"),
         "meaning": HOLD_CODES.get(code, "see HoldReasonCode in the HTCondor manual"),
+    }
+
+
+def exit_info(ad: classad.ClassAd) -> dict[str, Any]:
+    """How a completed job's program exited."""
+    return {
+        "code": get(ad, "ExitCode"),
+        "by_signal": bool(get(ad, "ExitBySignal", False)),
+        "signal": get(ad, "ExitSignal"),
     }
 
 
@@ -219,13 +227,12 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
         out["hold"] = hold_info(ad)
     if get(ad, "ReleaseReason"):  # stays on the ad after a release, whatever the job did next
         out["last_release_reason"] = get(ad, "ReleaseReason")
+    if status_code in (JobStatus.COMPLETED, JobStatus.REMOVED):
+        out["ran_on"] = get(ad, "LastRemoteHost")
     if status_code == JobStatus.COMPLETED:
-        out["exit"] = {
-            "code": get(ad, "ExitCode"),
-            "by_signal": bool(get(ad, "ExitBySignal", False)),
-            "signal": get(ad, "ExitSignal"),
-            "completed_at": ts(get(ad, "CompletionDate")),
-        }
+        out["exit"] = {**exit_info(ad), "completed_at": ts(get(ad, "CompletionDate"))}
+    elif status_code == JobStatus.REMOVED:
+        out["remove_reason"] = get(ad, "RemoveReason")
     extra = site_attrs(ad, extra_attrs)
     if extra:
         out["site"] = extra
@@ -285,11 +292,7 @@ def finished_job(ad: classad.ClassAd) -> dict[str, Any]:
     }
     status_code = get(ad, "JobStatus")
     if status_code == JobStatus.COMPLETED:
-        row["exit"] = {
-            "code": get(ad, "ExitCode"),
-            "by_signal": bool(get(ad, "ExitBySignal", False)),
-            "signal": get(ad, "ExitSignal"),
-        }
+        row["exit"] = exit_info(ad)
     elif status_code == JobStatus.REMOVED:
         # A removed job is killed, so its exit fields describe the kill, not the program
         row["remove_reason"] = get(ad, "RemoveReason")

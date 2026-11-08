@@ -39,7 +39,7 @@ async def test_job_details_running(live_jobs):
     assert job["requested"]["memory_mb"] == 64
     assert isinstance(job["requested"]["disk_kb"], int)
     assert job["files"]["transfer_input"] == []
-    assert "hold" not in job
+    assert job["in_queue"] is True and "hold" not in job and "ran_on" not in job
 
 
 async def test_job_details_held(live_jobs):
@@ -51,8 +51,16 @@ async def test_job_details_held(live_jobs):
     assert job["files"]["transfer_input"] == ["/nonexistent/condor-mcp-test-input.csv"]
 
 
+async def test_job_details_finished(finished_job):
+    job = await call("job_details", cluster_id=finished_job)
+    assert job["status"] == "completed" and job["in_queue"] is False
+    assert job["exit"]["code"] == 3 and job["exit"]["completed_at"]
+    assert job["ran_on"] and job["running_on"] is None
+    assert job["files"]["stdout"] == f"{finished_job}.0.out"
+
+
 async def test_job_details_missing():
-    with pytest.raises(ToolError, match="not in the queue"):
+    with pytest.raises(ToolError, match="neither the queue nor the schedd history"):
         await call("job_details", cluster_id=999999, proc_id=0)
 
 
