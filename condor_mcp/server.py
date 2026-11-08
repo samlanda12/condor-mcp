@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import getpass
+import os
 from collections import Counter
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
@@ -197,6 +199,107 @@ def job_history(
                 "dropped it from its history."
             )
     log.info("  -> %d finished jobs", len(rows))
+    return out
+
+
+OutputKind = Literal["stdout", "stderr", "log"]
+# Job ad attribute and submit command for each kind of output
+_OUTPUT_FILES = {"stdout": ("Out", "output"), "stderr": ("Err", "error"), "log": ("UserLog", "log")}
+# The most of a file job_output returns, however many lines were asked for
+MAX_OUTPUT_BYTES = 64 * 1024
+
+
+def _tail(path: Path, lines: int) -> tuple[str, int, bool]:
+    """The last `lines` lines of a file, read from the end and capped at MAX_OUTPUT_BYTES.
+
+    Returns (text, file size in bytes, whether anything before the text was left out)."""
+    with path.open("rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        start = max(0, size - MAX_OUTPUT_BYTES)
+        f.seek(start)
+        parts = f.read().decode("utf-8", errors="replace").splitlines()
+    if start and len(parts) > 1:
+        parts = parts[1:]  # the cap most likely landed mid-line
+    return "\n".join(parts[-lines:]), size, bool(start) or len(parts) > lines
+
+
+def _missing_output_note(ad: Any, which: str, in_queue: bool, path: Path) -> str:
+    """Why a job's output file is not on the submit host, most likely reason first."""
+    if which != "log":  # the schedd writes the log at submit, so only stdout/stderr can be pending
+        if not get(ad, "NumJobStarts", 0):
+            if in_queue:
+                return f"No {which} yet: the job is {classads.status_name(ad)} and has not started."
+            return f"No {which}: the job never started, so it wrote none."
+        streamed = get(ad, "StreamOut" if which == "stdout" else "StreamErr", False)
+        if in_queue and get(ad, "ShouldTransferFiles", "YES") != "NO" and not streamed:
+            return (
+                f"No {which} yet: the job is {classads.status_name(ad)}, and with file transfer "
+                f"HTCondor copies its {which} back to the submit host only when the job ends. "
+                "which='log' shows its progress meanwhile."
+            )
+    return f"{path} does not exist. It may have been moved or deleted since the job wrote it."
+
+
+@mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
+def job_output(
+    cluster_id: Annotated[int, ClusterField],
+    proc_id: Annotated[int, Field(ge=0, description="Process number within the cluster, the part after the dot")] = 0,
+    which: Annotated[
+        OutputKind,
+        Field(description="stdout or stderr: what the program printed. log: HTCondor's event "
+              "log for the job (submitted, started where, held, evicted, exit code)."),
+    ] = "stdout",
+    tail_lines: Annotated[int, Field(ge=1, le=500, description="How many lines from the end.")] = 50,
+) -> dict[str, Any]:
+    """Show the last lines of a job's stdout, stderr, or HTCondor event log, read
+    from the submit host. Works for jobs in the queue and for jobs that have left
+    it, but only for jobs the configured user owns. Use this for "what did my job
+    print", "why did it crash", or "what happened to it". With file transfer, a
+    running job's stdout and stderr reach the submit host only when it ends;
+    until then the log shows its progress."""
+    log.info("job_output cluster_id=%s proc_id=%s which=%s tail_lines=%s", cluster_id, proc_id, which, tail_lines)
+    found = pool.find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
+    if found is None:
+        raise ToolError(
+            f"Job {cluster_id}.{proc_id} is in neither the queue nor the schedd history. The ID "
+            "may be wrong, or the job is old enough that the schedd has dropped it from its history."
+        )
+    schedd, ad, in_queue = found
+
+    if get(ad, "Owner") != settings.user:
+        raise ToolError(
+            f"Refusing to read the output of job {cluster_id}.{proc_id}: it belongs to "
+            f"{get(ad, 'Owner') or '<no owner>'}, not {settings.user}. This server only reads "
+            "output of jobs owned by the user it runs as (CONDOR_MCP_USER)."
+        )
+    attr, command = _OUTPUT_FILES[which]
+    out: dict[str, Any] = {
+        "job_id": classads.job_id(ad), "status": classads.status_name(ad), "in_queue": in_queue, "which": which,
+    }
+    pool.tag_schedd(out, schedd)
+    name = get(ad, attr)
+    if not name or name == "/dev/null":
+        out["note"] = (
+            f"The job keeps no {which}: its submit file sets no `{command}` file, or sets it to "
+            f"/dev/null. Add `{command} = <file>` to keep it next time."
+        )
+        log.info("  -> no %s file", which)
+        return out
+    path = Path(get(ad, "Iwd") or "") / str(name)  # an absolute name replaces Iwd
+    out["path"] = str(path)
+    try:
+        text, size, truncated = _tail(path, tail_lines)
+    except FileNotFoundError:
+        out["text"] = ""
+        out["note"] = _missing_output_note(ad, which, in_queue, path)
+        log.info("  -> %s missing", path)
+        return out
+    except OSError as exc:  # permissions, a directory, ...
+        raise ToolError(f"Could not read the job's {which} at {path}: {exc}") from exc
+    out.update(text=text, size_bytes=size, truncated=truncated)
+    if not size:
+        out["note"] = f"{path} is empty."
+    log.info("  -> %d bytes of %s", len(text), path)
     return out
 
 

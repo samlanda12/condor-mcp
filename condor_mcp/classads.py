@@ -98,6 +98,12 @@ HISTORY_PROJECTION = [
     "ExitCode", "ExitBySignal", "ExitSignal", "RemoveReason", "LastHoldReason",
 ]
 
+# What job_output needs to find a job's files and explain a missing one
+OUTPUT_PROJECTION = [
+    "ClusterId", "ProcId", "Owner", "JobStatus", "NumJobStarts", "Iwd", "Out", "Err", "UserLog",
+    "ShouldTransferFiles", "StreamOut", "StreamErr",
+]
+
 # Slot attributes from the collector
 SLOT_PROJECTION = [
     "Name", "Machine", "State", "Activity", "SlotType",

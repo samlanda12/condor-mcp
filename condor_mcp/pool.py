@@ -169,6 +169,22 @@ def query_history(
     return found
 
 
+def find_job(
+    cluster_id: int, proc_id: int, projection: list[str]
+) -> tuple[str, classad.ClassAd, bool] | None:
+    """One job's ad from the queue or, once it has left the queue, from the history.
+
+    Returns (schedd name, ad, whether it is still in the queue), or None if neither has it."""
+    constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
+    queued = query_jobs(constraint, projection, limit=1)
+    if queued:
+        return (*queued[0], True)
+    finished = query_history(constraint, projection, limit=1)
+    if finished:
+        return (*finished[0], False)
+    return None
+
+
 def query_slots(projection: list[str], constraint: str | None = None) -> list[classad.ClassAd]:
     """Startd ads from the collector, filtered by the configured slot constraint."""
     expr = settings.slot_constraint
