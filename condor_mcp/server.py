@@ -217,10 +217,14 @@ def _tail(path: Path, lines: int) -> tuple[str, int, bool]:
     with path.open("rb") as f:
         size = f.seek(0, os.SEEK_END)
         start = max(0, size - MAX_OUTPUT_BYTES)
-        f.seek(start)
-        parts = f.read().decode("utf-8", errors="replace").splitlines()
-    if start and len(parts) > 1:
-        parts = parts[1:]  # the cap most likely landed mid-line
+        f.seek(max(0, start - 1))  # one byte early, to see whether the cut is at a line start
+        data = f.read()
+    mid_line = bool(start) and data[:1] != b"\n"
+    if start:
+        data = data[1:]
+    parts = data.decode("utf-8", errors="replace").splitlines()
+    if mid_line and len(parts) > 1:
+        parts = parts[1:]  # the cap landed mid-line
     return "\n".join(parts[-lines:]), size, bool(start) or len(parts) > lines
 
 

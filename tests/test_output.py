@@ -117,3 +117,17 @@ def test_tail_of_one_long_line(tmp_path):
     big.write_text("x" * (2 * MAX_OUTPUT_BYTES) + "\n")
     text, size, truncated = _tail(big, 10)
     assert text == "x" * (MAX_OUTPUT_BYTES - 1) and size == 2 * MAX_OUTPUT_BYTES + 1 and truncated
+
+
+@pytest.mark.parametrize("tail, first", [("", 904), ("end\n", 905)])
+def test_tail_cut_at_a_line_start(tmp_path, tail, first):
+    """Lines of 16 bytes put the 64 KB cut exactly at the start of line 904; a 4-byte
+    last line moves it into line 904, which is then dropped as partial."""
+    from condor_mcp.server import MAX_OUTPUT_BYTES, _tail
+
+    f = tmp_path / "fixed.out"
+    f.write_text("".join(f"{i:015d}\n" for i in range(5000)) + tail)
+    text, size, truncated = _tail(f, 5000)
+    lines = text.splitlines()
+    assert lines[0] == f"{first:015d}" and truncated
+    assert sum(len(line) + 1 for line in lines) <= MAX_OUTPUT_BYTES
