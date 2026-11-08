@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import getpass
 
+import htcondor2 as htcondor
 import pytest
 
 from conftest import call
@@ -29,10 +30,13 @@ async def test_job_history_completed(finished_job):
 
 
 async def test_job_history_newest_first_and_limit(finished_job):
+    """Checked against the schedd directly, so it holds however many jobs the other
+    tests have left in the history by now."""
+    in_history = len(htcondor.Schedd().history(f'Owner == "{ME}"', ["ClusterId"], match=3))
     out = await call("job_history", limit=2)
-    assert len(out["jobs"]) == 2 and out["truncated"]
-    first, second = out["jobs"]
-    assert first["finished_at"] >= second["finished_at"]
+    assert len(out["jobs"]) == min(in_history, 2) and out["truncated"] is (in_history > 2)
+    for newer, older in zip(out["jobs"], out["jobs"][1:]):
+        assert newer["finished_at"] >= older["finished_at"]
 
 
 async def test_job_history_missing_cluster():

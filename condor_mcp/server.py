@@ -13,6 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+import classad2 as classad
 import htcondor2 as htcondor
 from htcondor2 import JobStatus
 
@@ -223,7 +224,7 @@ def _tail(path: Path, lines: int) -> tuple[str, int, bool]:
     return "\n".join(parts[-lines:]), size, bool(start) or len(parts) > lines
 
 
-def _missing_output_note(ad: Any, which: str, in_queue: bool, path: Path) -> str:
+def _missing_output_note(ad: classad.ClassAd, which: str, in_queue: bool, path: Path) -> str:
     """Why a job's output file is not on the submit host, most likely reason first."""
     if which != "log":  # the schedd writes the log at submit, so only stdout/stderr can be pending
         if not get(ad, "NumJobStarts", 0):
