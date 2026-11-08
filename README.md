@@ -172,13 +172,15 @@ Other clients take the same command and args in their own config format. Put any
 
 ## Tools
 
-These tools only see jobs that are still in the queue. Job history isn't supported yet.
+`job_history` covers jobs that have left the queue; the other job tools see only jobs
+still in it.
 
 | Tool | What it does |
 | --- | --- |
 | `job_details(cluster_id, proc_id=0)` | Everything about one job: status, where it runs, requested vs used resources, input/output files, and the hold reason in plain language if it is held. |
 | `list_jobs(owner="me", status=None, limit=50)` | One line per job plus a count of the owner's jobs by status. `owner` is `me`, `all`, or a username. |
 | `hold_reasons(owner="me")` | Every held job with HTCondor's message, the hold code, what the code means, and a tally by code. |
+| `job_history(owner="me", cluster_id=None, limit=20)` | Jobs that have left the queue, newest first: exit code for completed jobs, the reason for removed ones, plus wall time, memory and disk used vs requested, and the machine it ran on. Reads the schedd history, which drops the oldest jobs as it fills. |
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
 | `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
 | `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Submits to the first schedd in `CONDOR_MCP_SCHEDDS`. Returns the cluster id, job count, and one `list_jobs` row per job. |
@@ -188,8 +190,8 @@ These tools only see jobs that are still in the queue. Job history isn't support
 
 ### Read-only and write tools
 
-`job_details`, `list_jobs`, `hold_reasons`, `pool_status`, and `draft_submit` are
-read-only: `draft_submit` writes nothing and contacts no schedd. The rest change the queue
+`job_details`, `list_jobs`, `hold_reasons`, `job_history`, `pool_status`, and
+`draft_submit` are read-only: `draft_submit` writes nothing and contacts no schedd. The rest change the queue
 and are marked non-read-only in their MCP annotations so clients can ask the user before
 calling them.
 

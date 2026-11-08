@@ -18,6 +18,8 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from condor_mcp.classads import get
+
 log = logging.getLogger("condor_mcp")
 
 # Comma-separated in the environment; NoDecode stops pydantic-settings from
@@ -140,6 +142,31 @@ def query_jobs(
         for name, schedd in schedds()
         for ad in query_schedd(name, schedd, constraint, projection, limit)
     ]
+
+
+def query_history(
+    constraint: str,
+    projection: list[str],
+    limit: int,
+) -> list[tuple[str, classad.ClassAd]]:
+    """Read the job history of every configured schedd: jobs that completed or were
+    removed and have left the queue.
+
+    Returns (schedd name, ad) pairs, most recently finished first. The limit applies
+    per schedd, so the merged list can be longer; callers trim it."""
+    found: list[tuple[str, classad.ClassAd]] = []
+    for name, schedd in schedds():
+        try:
+            ads = schedd.history(constraint, projection, match=limit)
+        except htcondor.HTCondorException as exc:
+            raise ToolError(
+                f"Could not read the job history of the schedd ({name}): {exc}. Is the schedd "
+                "up? Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
+            ) from exc
+        found.extend((name, ad) for ad in ads)
+    # Each schedd answers newest first; the sort interleaves several schedds the same way
+    found.sort(key=lambda pair: get(pair[1], "EnteredCurrentStatus", 0), reverse=True)
+    return found
 
 
 def query_slots(projection: list[str], constraint: str | None = None) -> list[classad.ClassAd]:

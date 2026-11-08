@@ -56,8 +56,8 @@ def job_details(
     """Describe one HTCondor job: status, where it is running, resources requested
     vs used, input and output file locations, and, if it is held, the hold reason
     in plain language. Use this when a user asks about a specific job by ID.
-    Only jobs still in the queue are visible; completed jobs that have left the
-    queue are not returned."""
+    Only jobs still in the queue are visible; for a job that has completed or been
+    removed and left the queue, use job_history."""
     log.info("job_details cluster_id=%s proc_id=%s", cluster_id, proc_id)
     found = pool.query_jobs(
         f"ClusterId == {cluster_id} && ProcId == {proc_id}",
@@ -67,8 +67,8 @@ def job_details(
     if not found:
         raise ToolError(
             f"Job {cluster_id}.{proc_id} is not in the queue. It may have finished "
-            "and left the queue, or the ID may be wrong. Try list_jobs to see what "
-            "is queued."
+            f"and left the queue (job_history with cluster_id={cluster_id} shows how it "
+            "ended), or the ID may be wrong. Try list_jobs to see what is queued."
         )
     schedd, ad = found[0]
     summary = pool.tag_schedd(classads.summarize_job(ad, settings.job_attrs), schedd)
@@ -88,7 +88,7 @@ def list_jobs(
     """List jobs in the queue, one compact line each, plus a count of the owner's
     jobs by status. Use this for "what's running", "how many jobs do I have", or
     to find a job ID; use job_details for the full picture of one job. Only jobs
-    still in the queue are listed; jobs that completed and left the queue are not."""
+    still in the queue are listed; job_history lists jobs that have left it."""
     log.info("list_jobs owner=%s status=%s limit=%s", owner, status, limit)
     constraint, name = pool.owner_constraint(owner)
     counts = Counter(
@@ -116,7 +116,8 @@ def list_jobs(
         who = f"for {name}" if name else "for anyone"
         what = f"{status} jobs" if status else "jobs"
         out["note"] = (
-            f"No {what} in the queue {who}. Jobs that finished have left the queue."
+            f"No {what} in the queue {who}. Jobs that finished have left the queue; "
+            "job_history lists them."
         )
     log.info("  -> %d of %d jobs", len(rows), matching)
     return out
@@ -154,6 +155,48 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     if not rows:
         out["note"] = f"No held jobs for {name or 'anyone'}."
     log.info("  -> %d held", len(rows))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
+def job_history(
+    owner: Annotated[str, OwnerField] = "me",
+    cluster_id: Annotated[
+        int | None, Field(ge=1, description="Only this cluster. Omit for the owner's most recent jobs.")
+    ] = None,
+    limit: Annotated[int, Field(ge=1, le=200, description="Most jobs to list, newest first.")] = 20,
+) -> dict[str, Any]:
+    """List jobs that have left the queue, newest first: completed ones with their
+    exit code, removed ones with the remove reason. Each row also gives wall time,
+    memory and disk used versus requested, and the machine the job ran on. Use this
+    for "did my job finish", "why did it fail", "how much memory did it use", or a
+    job that job_details no longer finds. Jobs still in the queue are not listed;
+    use list_jobs or job_details for those."""
+    log.info("job_history owner=%s cluster_id=%s limit=%s", owner, cluster_id, limit)
+    constraint, name = pool.owner_constraint(owner)
+    if cluster_id is not None:
+        constraint = f"({constraint}) && ClusterId == {cluster_id}"
+    # One extra per schedd, so a list cut at the limit can say so
+    found = pool.query_history(constraint, _job_projection(classads.HISTORY_PROJECTION), limit + 1)
+    rows = []
+    for schedd, ad in found[:limit]:
+        row = classads.finished_job(ad)
+        if settings.job_attrs:
+            row["site"] = classads.site_attrs(ad, settings.job_attrs)
+        rows.append(pool.tag_schedd(row, schedd))
+    out: dict[str, Any] = {"owner": name or "all", "jobs": rows, "truncated": len(found) > limit}
+    if not rows:
+        who = f"for {name}" if name else "for anyone"
+        if cluster_id is None:
+            out["note"] = f"No finished jobs in the history {who}."
+        else:
+            out["note"] = (
+                f"Cluster {cluster_id} is not in the history {who}. If it is still queued, "
+                "job_details shows it. Otherwise the ID may be wrong, the job may belong to "
+                "someone else (try owner='all'), or it is old enough that the schedd has "
+                "dropped it from its history."
+            )
+    log.info("  -> %d finished jobs", len(rows))
     return out
 
 
