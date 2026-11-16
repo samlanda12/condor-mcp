@@ -60,13 +60,15 @@ async def test_job_history_other_owner():
     }
 
 
-def test_no_ran_on_for_a_job_that_never_started():
-    """A job whose input transfer failed keeps the slot it claimed in LastRemoteHost."""
+def test_no_ran_on_or_wall_clock_for_a_job_that_never_started():
+    """A job whose input transfer failed keeps the slot it claimed in LastRemoteHost,
+    and the time spent claiming it in RemoteWallClockTime."""
     import classad2 as classad
 
     from condor_mcp.classads import finished_job
 
     ad = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "JobStatus": 3, "NumJobStarts": 0,
-                          "LastRemoteHost": "slot1@host", "RemoveReason": "via condor_rm"})
+                          "LastRemoteHost": "slot1@host", "RemoteWallClockTime": 120,
+                          "RemoveReason": "via condor_rm"})
     row = finished_job(ad)
-    assert row["starts"] == 0 and "ran_on" not in row
+    assert row["starts"] == 0 and "ran_on" not in row and "wall_clock_s" not in row
