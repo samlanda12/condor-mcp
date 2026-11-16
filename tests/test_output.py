@@ -109,6 +109,39 @@ async def test_job_output_refuses_an_id_on_two_schedds(finished_job, monkeypatch
         await call("job_output", cluster_id=finished_job)
 
 
+def _two_schedds(monkeypatch, history_on_b):
+    """Job 7.0 queued on schedd a; schedd b's history answers with history_on_b."""
+    import classad2 as classad
+
+    from condor_mcp import pool
+
+    queued = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "JobStatus": 2})
+    monkeypatch.setattr(pool, "schedds", lambda: iter([("a", None), ("b", None)]))
+    monkeypatch.setattr(pool, "query_schedd", lambda name, *args, **kw: [queued] if name == "a" else [])
+    monkeypatch.setattr(pool, "query_schedd_history", lambda name, *args, **kw: history_on_b(name))
+    return queued
+
+
+def test_find_job_prefers_the_queue_over_another_schedds_history(monkeypatch):
+    import classad2 as classad
+
+    from condor_mcp import pool
+
+    older = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "JobStatus": 4})
+    queued = _two_schedds(monkeypatch, lambda name: [older] if name == "b" else [])
+    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True)
+
+
+def test_find_job_skips_the_history_once_a_queue_has_the_job(monkeypatch):
+    from condor_mcp import pool
+
+    def unreadable(name):
+        raise ToolError(f"Could not read the job history of the schedd ({name})")
+
+    queued = _two_schedds(monkeypatch, unreadable)
+    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True)
+
+
 def test_tail_of_one_long_line(tmp_path):
     """A last line longer than the cap comes back as its final MAX_OUTPUT_BYTES, marked cut."""
     from condor_mcp.server import MAX_OUTPUT_BYTES, _tail

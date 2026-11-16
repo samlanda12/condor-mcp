@@ -58,3 +58,15 @@ async def test_job_history_other_owner():
         "owner": NOBODY, "jobs": [], "truncated": False,
         "note": f"No finished jobs in the history for {NOBODY}.",
     }
+
+
+def test_no_ran_on_for_a_job_that_never_started():
+    """A job whose input transfer failed keeps the slot it claimed in LastRemoteHost."""
+    import classad2 as classad
+
+    from condor_mcp.classads import finished_job
+
+    ad = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "JobStatus": 3, "NumJobStarts": 0,
+                          "LastRemoteHost": "slot1@host", "RemoveReason": "via condor_rm"})
+    row = finished_job(ad)
+    assert row["starts"] == 0 and "ran_on" not in row

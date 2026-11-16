@@ -277,12 +277,14 @@ def finished_job(ad: classad.ClassAd) -> dict[str, Any]:
         "command": command_line(ad),
         "submitted_at": ts(get(ad, "QDate")),
         "finished_at": ts(get(ad, "EnteredCurrentStatus")),
-        "ran_on": get(ad, "LastRemoteHost"),
         "wall_clock_s": get(ad, "RemoteWallClockTime"),
         "starts": get(ad, "NumJobStarts", 0),
         "memory_mb": {"requested": get(ad, "RequestMemory"), "used": get(ad, "MemoryUsage")},
         "disk_kb": {"requested": get(ad, "RequestDisk"), "used": get(ad, "DiskUsage")},
     }
+    # LastRemoteHost is set once a slot is claimed, even if input transfer then fails
+    if row["starts"]:
+        row["ran_on"] = get(ad, "LastRemoteHost")
     status_code = get(ad, "JobStatus")
     if status_code == JobStatus.COMPLETED:
         row["exit"] = {

@@ -187,18 +187,23 @@ def find_job(
     """One job's ad from the queue or, once it has left the queue, from the history.
 
     Returns (schedd name, ad, whether it is still in the queue), or None if neither has it.
-    Cluster IDs are only unique within one schedd, so every schedd is checked and an ID
-    found on more than one is refused rather than guessed."""
+    Cluster IDs are only unique within one schedd, so every queue is checked and an ID
+    queued on more than one is refused rather than guessed. A queued job wins over
+    history hits, which are older jobs that reused the ID on another schedd, so the
+    histories are read only when no queue has the job."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
-    found: list[tuple[str, classad.ClassAd, bool]] = []
-    for name, schedd in schedds():
-        queued = query_schedd(name, schedd, constraint, projection, limit=1)
-        if queued:
-            found.append((name, queued[0], True))
-            continue
-        finished = query_schedd_history(name, schedd, constraint, projection, limit=1)
-        if finished:
-            found.append((name, finished[0], False))
+    targets = list(schedds())
+    found = [
+        (name, ad, True)
+        for name, schedd in targets
+        for ad in query_schedd(name, schedd, constraint, projection, limit=1)
+    ]
+    if not found:
+        found = [
+            (name, ad, False)
+            for name, schedd in targets
+            for ad in query_schedd_history(name, schedd, constraint, projection, limit=1)
+        ]
     if len(found) > 1:
         raise ToolError(
             f"Job {cluster_id}.{proc_id} exists on more than one schedd "
