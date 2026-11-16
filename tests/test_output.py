@@ -156,6 +156,16 @@ def test_find_job_refuses_a_queued_id_another_history_finished_since(monkeypatch
         pool.find_job(7, 0, ["JobStatus"])
 
 
+def test_find_job_skips_the_queued_schedds_own_history(monkeypatch):
+    """A's 7.0 leaves the queue between the queue read and the history read, so A's
+    history has it too; that is the same job, not a second one."""
+    from condor_mcp import pool
+
+    queued = _job(JobStatus=2, QDate=1000)
+    _two_schedds(monkeypatch, {"a": [queued]}, {"a": [_job(JobStatus=4, QDate=1000, EnteredCurrentStatus=1100)]})
+    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True)
+
+
 def test_find_job_refuses_an_id_queued_on_two_schedds(monkeypatch):
     from condor_mcp import pool
 

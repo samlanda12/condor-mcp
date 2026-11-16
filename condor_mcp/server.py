@@ -173,8 +173,8 @@ def job_history(
     exit code, removed ones with the remove reason. Each row also gives memory and
     disk used versus requested and, for jobs that started, wall time and the machine
     they ran on. Use this for "did my job finish", "why did it fail", "how much memory
-    did it use", or a job that job_details no longer finds. Jobs still in the queue are not listed;
-    use list_jobs or job_details for those."""
+    did it use", or a job that job_details no longer finds. Jobs still in the queue are
+    not listed; use list_jobs or job_details for those."""
     log.info("job_history owner=%s cluster_id=%s limit=%s", owner, cluster_id, limit)
     constraint, name = pool.owner_constraint(owner)
     if cluster_id is not None:

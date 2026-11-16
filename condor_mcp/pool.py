@@ -167,18 +167,16 @@ def query_history(
     constraint: str,
     projection: list[str],
     limit: int,
-    since: str | None = None,
 ) -> list[tuple[str, classad.ClassAd]]:
     """Read the job history of every configured schedd: jobs that completed or were
     removed and have left the queue.
 
     Returns (schedd name, ad) pairs, most recently finished first. The limit applies
-    per schedd, so the merged list can be longer; callers trim it. Each schedd's read
-    stops at the first job for which since is true."""
+    per schedd, so the merged list can be longer; callers trim it."""
     found = [
         (name, ad)
         for name, schedd in schedds()
-        for ad in query_schedd_history(name, schedd, constraint, projection, limit, since)
+        for ad in query_schedd_history(name, schedd, constraint, projection, limit)
     ]
     # Each schedd answers newest first; the sort interleaves several schedds the same way
     found.sort(key=lambda pair: get(pair[1], "EnteredCurrentStatus", 0), reverse=True)
@@ -194,16 +192,25 @@ def find_job(
     Cluster IDs are only unique within one schedd, so an ID found on more than one is
     refused rather than guessed. The exception is a queued job and a history hit on
     another schedd that left the queue before the queued job was submitted: that is an
-    older job that reused the ID, so the queued job wins. The histories are read back
-    only that far once a queue has the job, and not at all with a single schedd."""
+    older job that reused the ID, so the queued job wins. Once a queue has the job, only
+    the other schedds' histories are read, only back that far, and not at all with a
+    single schedd."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
     projection = [*projection, "QDate"]
     found = [(name, ad, True) for name, ad in query_jobs(constraint, projection, 1)]
     if not found:
         found = [(name, ad, False) for name, ad in query_history(constraint, projection, 1)]
     elif len(found) == 1 and len(settings.schedds) > 1:
-        since = f"EnteredCurrentStatus < {get(found[0][1], 'QDate', 0)}"
-        found += [(name, ad, False) for name, ad in query_history(constraint, projection, 1, since)]
+        # The queued job's own schedd never reuses its ID, and reading its history could
+        # find the job a second time if it leaves the queue between the two reads
+        queued_on, queued_ad, _ = found[0]
+        since = f"EnteredCurrentStatus < {get(queued_ad, 'QDate', 0)}"
+        found += [
+            (name, ad, False)
+            for name, schedd in schedds()
+            if name != queued_on
+            for ad in query_schedd_history(name, schedd, constraint, projection, 1, since)
+        ]
     if len(found) > 1:
         raise ToolError(
             f"Job {cluster_id}.{proc_id} exists on more than one schedd "
