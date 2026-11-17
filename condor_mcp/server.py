@@ -17,9 +17,10 @@ import classad2 as classad
 import htcondor2 as htcondor
 from htcondor2 import JobStatus
 
-from condor_mcp import classads, pool, submit
+from condor_mcp import classads, pool, submit, worker
 from condor_mcp.classads import get
-from condor_mcp.pool import log, settings
+from condor_mcp.pool import CONDOR_ERRORS, log, settings
+from condor_mcp.worker import NoAnswer
 
 mcp = FastMCP("condor-mcp")
 
@@ -511,13 +512,19 @@ def submit_job(
 
     name, schedd = next(pool.schedds())
     try:
-        result = schedd.submit(description)
+        # As text: a Submit object cannot be sent to the process that makes the call
+        result = pool.call(worker.schedd_submit, schedd, str(description))
+    except NoAnswer as exc:
+        raise ToolError(
+            f"The schedd ({name}) did not answer the submit: {exc}. The jobs may or may not "
+            "have been queued; check with list_jobs before submitting again."
+        ) from exc
     except (htcondor.HTCondorException, RuntimeError) as exc:
         raise ToolError(f"The schedd ({name}) refused the submit: {exc}") from exc
     cluster = result.cluster()
     try:
-        queued = schedd.query(f"ClusterId == {cluster}", projection=classads.JOB_LIST_PROJECTION)
-    except htcondor.HTCondorException as exc:
+        queued = pool.call(worker.schedd_query, schedd, f"ClusterId == {cluster}", classads.JOB_LIST_PROJECTION, -1)
+    except CONDOR_ERRORS as exc:
         raise ToolError(f"Submitted cluster {cluster} but could not read it back: {exc}") from exc
     queued.sort(key=lambda ad: get(ad, "ProcId", 0))
     out: dict[str, Any] = {
@@ -605,7 +612,12 @@ def _act(
     try:
         # htcondor2 drops a plain-string reason on the floor; only the (text, code) tuple reaches
         # the schedd. A None code keeps HoldReasonCode at 1, the same as condor_hold.
-        result = schedd.act(action, f"{constraint} && {mine}", reason=(reason, None))
+        result = pool.call(worker.schedd_act, schedd, action, f"{constraint} && {mine}", (reason, None))
+    except NoAnswer as exc:
+        raise ToolError(
+            f"The schedd ({name}) did not answer the request to {verb} {label}: {exc}. It may or may "
+            "not have taken effect; check with job_details before trying again."
+        ) from exc
     except (htcondor.HTCondorException, RuntimeError) as exc:
         raise ToolError(f"The schedd ({name}) could not {verb} {label}: {exc}") from exc
     if result is None:  # htcondor2 returns None instead of raising when the schedd sends no result

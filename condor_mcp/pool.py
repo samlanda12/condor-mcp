@@ -10,7 +10,7 @@ from __future__ import annotations
 import getpass
 import logging
 from pathlib import Path
-from typing import Annotated, Any, Iterator
+from typing import Annotated, Any, Callable, Iterator, TypeVar
 
 import classad2 as classad
 import htcondor2 as htcondor
@@ -18,7 +18,11 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from condor_mcp import worker
 from condor_mcp.classads import get
+from condor_mcp.worker import NoAnswer
+
+T = TypeVar("T")
 
 log = logging.getLogger("condor_mcp")
 
@@ -47,6 +51,8 @@ class Settings(BaseSettings):
     # Where drafted jobs run from (their initialdir) and where their log,
     # stdout and stderr land.
     workdir: Path = Field(default_factory=lambda: Path.home() / "condor-mcp-jobs")
+    # Seconds to wait for a schedd or the collector before giving up on a call.
+    timeout: float = Field(default=60, gt=0)
 
     @field_validator("schedds", "job_attrs", "slot_attrs", mode="before")
     @classmethod
@@ -78,8 +84,16 @@ except OSError as _exc:
     log.warning("could not create the work directory %s: %s", settings.workdir, _exc)
 
 
-def collector() -> htcondor.Collector:
-    return htcondor.Collector(settings.collector)
+# What a call to a daemon raises when it fails or gets no answer in time
+CONDOR_ERRORS = (htcondor.HTCondorException, NoAnswer)
+
+
+def call(fn: Callable[..., T], *args: Any) -> T:
+    """Run one of the calls in condor_mcp.worker with the configured deadline."""
+    try:
+        return worker.run(settings.timeout, fn, *args)
+    except NoAnswer as exc:
+        raise NoAnswer(f"{exc}; CONDOR_MCP_TIMEOUT sets the limit") from None
 
 
 def schedds() -> Iterator[tuple[str, htcondor.Schedd]]:
@@ -87,11 +101,10 @@ def schedds() -> Iterator[tuple[str, htcondor.Schedd]]:
     if not settings.schedds:
         yield "local", htcondor.Schedd()
         return
-    coll = collector()
     for name in settings.schedds:
         try:
-            ad = coll.locate(htcondor.DaemonType.Schedd, name)
-        except htcondor.HTCondorException as exc:
+            ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Schedd, name)
+        except CONDOR_ERRORS as exc:
             raise ToolError(
                 f"Could not reach the collector to find schedd {name!r}: {exc}. "
                 "Check CONDOR_MCP_COLLECTOR."
@@ -121,8 +134,8 @@ def query_schedd(
 ) -> list[classad.ClassAd]:
     """Run one job query against one schedd, turning a failure into a ToolError."""
     try:
-        return schedd.query(constraint=constraint, projection=projection, limit=limit)
-    except htcondor.HTCondorException as exc:  # schedd down, auth, etc.
+        return call(worker.schedd_query, schedd, constraint, projection, limit)
+    except CONDOR_ERRORS as exc:  # schedd down or not answering, auth, etc.
         raise ToolError(
             f"Could not reach the schedd ({name}): {exc}. Is the schedd up? "
             "Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
@@ -155,8 +168,8 @@ def query_schedd_history(
     """Read one schedd's job history, turning a failure into a ToolError. The history is
     read newest first and the read stops at the first job for which since is true."""
     try:
-        return list(schedd.history(constraint, projection, match=limit, since=since))
-    except htcondor.HTCondorException as exc:
+        return call(worker.schedd_history, schedd, constraint, projection, limit, since)
+    except CONDOR_ERRORS as exc:
         raise ToolError(
             f"Could not read the job history of the schedd ({name}): {exc}. Is the schedd "
             "up? Check with `condor_status -schedd`, and CONDOR_MCP_SCHEDDS if set."
@@ -226,8 +239,8 @@ def query_slots(projection: list[str], constraint: str | None = None) -> list[cl
     if constraint:
         expr = f"({expr}) && ({constraint})"
     try:
-        return collector().query(htcondor.AdType.Startd, constraint=expr, projection=projection)
-    except htcondor.HTCondorException as exc:
+        return call(worker.collector_query, settings.collector, htcondor.AdType.Startd, expr, projection)
+    except CONDOR_ERRORS as exc:
         raise ToolError(
             f"Could not reach the collector ({settings.collector or 'from HTCondor config'}): "
             f"{exc}. Is the pool up? Check with `condor_status`, and CONDOR_MCP_COLLECTOR if set."
