@@ -366,7 +366,7 @@ def pool_status(
         gpus["total"] += total_g
         gpus["available"] += free_g
         if total_g:
-            model = get(ad, "CUDADeviceName") or "unknown model"
+            model = classads.gpu_model(ad) or "unknown model"
             entry = gpu_models.setdefault(model, {"total": 0, "available": 0})
             entry["total"] += total_g
             entry["available"] += free_g

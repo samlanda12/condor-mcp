@@ -237,10 +237,6 @@ The tests submit real jobs to a live pool, so they need permission to submit. Th
 their jobs `CondorMcpTest`, remove only those when they finish, and keep their files in a
 temp directory. Don't run them against a production schedd you don't own.
 
-They also expect a small development pool with one execute machine and no GPUs, like the
-container below. On a bigger pool the `pool_status` tests fail even though the server
-works.
-
 ```sh
 uv run pytest
 ```

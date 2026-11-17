@@ -73,7 +73,7 @@ JOB_PROJECTION = [
     "ClusterId", "ProcId", "Owner", "JobStatus", "EnteredCurrentStatus",
     "Cmd", "Args", "Arguments", "Iwd",
     "QDate", "JobStartDate", "CompletionDate", "RemoteHost",
-    "RequestCpus", "RequestMemory", "RequestDisk", "TransferInputSizeMB",
+    "RequestCpus", "RequestMemory", "RequestDisk", "RequestGPUs", "TransferInputSizeMB",
     "MemoryUsage", "RemoteWallClockTime", "NumJobStarts",
     "HoldReason", "HoldReasonCode", "HoldReasonSubCode", "ReleaseReason",
     "ExitCode", "ExitBySignal", "ExitSignal", "LastRemoteHost", "RemoveReason", "LastHoldReason",
@@ -114,7 +114,7 @@ SLOT_PROJECTION = [
     "PartitionableSlot", "DynamicSlot",
     "Cpus", "Memory", "Disk", "GPUs",
     "TotalSlotCpus", "TotalSlotMemory", "TotalSlotGPUs",
-    "CUDADeviceName", "RemoteOwner", "LoadAvg",
+    "GPUs_DeviceName", "CUDADeviceName", "RemoteOwner", "LoadAvg",
     "EnteredCurrentActivity",
     "TotalSlotDisk", "Arch", "OpSys",
 ]
@@ -179,6 +179,13 @@ def slot_totals(ad: classad.ClassAd) -> dict[str, int]:
     """A slot's full size by resource, whether it is partitionable (TotalSlotX)
     or static (X). Site attribute names differ, so this is the one place to adapt."""
     return {res: int(get(ad, f"TotalSlot{res}", get(ad, res, 0)) or 0) for res in SLOT_RESOURCES}
+
+
+def gpu_model(ad: classad.ClassAd) -> str | None:
+    """The model of a slot's GPUs. Current HTCondor publishes it as GPUs_DeviceName.
+    CUDADeviceName is the older name: some sites still define it as an alias of
+    GPUs_DeviceName, which evaluates to nothing when only the alias is fetched."""
+    return get(ad, "GPUs_DeviceName") or get(ad, "CUDADeviceName")
 
 
 def site_attrs(ad: classad.ClassAd, attrs: Iterable[str]) -> dict[str, Any]:
@@ -325,7 +332,7 @@ def summarize_slot(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict
         "memory_mb": get(ad, "Memory"),
         "disk_kb": get(ad, "Disk"),
         "gpus": get(ad, "GPUs"),
-        "gpu_model": get(ad, "CUDADeviceName"),
+        "gpu_model": gpu_model(ad),
         "claimed_by": get(ad, "RemoteOwner"),
         "load_avg": get(ad, "LoadAvg"),
         "since": ts(get(ad, "EnteredCurrentActivity")),

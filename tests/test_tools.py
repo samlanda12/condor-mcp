@@ -128,15 +128,20 @@ async def test_hold_reasons_empty():
 
 
 async def test_pool_status(live_jobs):
+    """Holds on any pool: only relations between the numbers, and the test's own running job."""
     out = await call("pool_status")
     assert out["machines"] >= 1
-    assert out["slots"]["total"] >= 2  # partitionable slot + the running job's dynamic slot
+    assert out["slots"]["total"] == sum(out["slots"]["by_state"].values())
     assert out["slots"]["by_state"].get("Claimed", 0) >= 1
-    assert out["cpus"]["total"] > 0
-    assert out["cpus"]["available"] < out["cpus"]["total"]
-    assert out["memory_mb"]["available"] < out["memory_mb"]["total"]
-    assert out["gpus"]["total"] == 0 and out["gpus"]["by_model"] == {}
-    assert out["largest_free_cpu_block"]["machine_cpus"] == out["cpus"]["total"]
+    for res in ("cpus", "memory_mb", "gpus"):
+        assert 0 <= out[res]["available"] <= out[res]["total"]
+    assert out["cpus"]["available"] < out["cpus"]["total"]  # the running job holds one
+    by_model = out["gpus"]["by_model"].values()
+    assert sum(m["total"] for m in by_model) == out["gpus"]["total"]
+    assert sum(m["available"] for m in by_model) == out["gpus"]["available"]
+    largest = out["largest_free_cpu_block"]
+    assert 0 <= largest["free_cpus"] <= largest["machine_cpus"] <= out["cpus"]["total"]
+    assert largest["free_cpus"] <= out["cpus"]["available"]
     assert "slot_list" not in out
 
 
@@ -145,8 +150,49 @@ async def test_pool_status_detail(live_jobs):
     slots = out["slot_list"]
     assert len(slots) == out["slots"]["total"]
     claimed = [s for s in slots if s["state"] == "Claimed"]
-    assert claimed and claimed[0]["claimed_by"].startswith(ME)
-    assert all(s["gpu_model"] is None for s in slots)
+    assert any((s["claimed_by"] or "").startswith(ME) for s in claimed)
+    assert all("gpu_model" in s for s in slots)
+
+
+async def test_pool_status_gpu_models(monkeypatch):
+    """GPU models come from GPUs_DeviceName, the name current HTCondor publishes, and
+    CUDADeviceName on older pools. The fake collector returns only projected attributes,
+    as the real one does."""
+    import classad2 as classad
+
+    from condor_mcp import pool
+
+    a100 = {"Name": "slot1@gpu1", "Machine": "gpu1", "State": "Unclaimed", "PartitionableSlot": True,
+            "Cpus": 8, "Memory": 4096, "GPUs": 1, "TotalSlotCpus": 32, "TotalSlotMemory": 65536,
+            "TotalSlotGPUs": 4, "GPUs_DeviceName": "NVIDIA A100"}
+    old = {"Name": "slot1@gpu2", "Machine": "gpu2", "State": "Unclaimed", "PartitionableSlot": True,
+           "Cpus": 4, "Memory": 8192, "GPUs": 2, "TotalSlotCpus": 4, "TotalSlotMemory": 8192,
+           "TotalSlotGPUs": 2, "CUDADeviceName": "Tesla K80"}
+
+    def fake_query_slots(projection, constraint=None):
+        return [classad.ClassAd({k: v for k, v in ad.items() if k in projection}) for ad in (a100, old)]
+
+    monkeypatch.setattr(pool, "query_slots", fake_query_slots)
+    out = await call("pool_status", detail=True)
+    assert out["gpus"] == {"total": 6, "available": 3, "by_model": {
+        "NVIDIA A100": {"total": 4, "available": 1}, "Tesla K80": {"total": 2, "available": 2}}}
+    assert [s["gpu_model"] for s in out["slot_list"]] == ["NVIDIA A100", "Tesla K80"]
+
+
+async def test_job_details_requested_gpus():
+    """RequestGPUs is fetched; the job is submitted on hold so it never needs a GPU slot."""
+    import htcondor2 as htcondor
+
+    schedd = htcondor.Schedd()
+    cluster = schedd.submit(htcondor.Submit({
+        "executable": "/bin/sleep", "arguments": "60", "request_gpus": "2", "hold": "true",
+        "request_memory": "64MB", "request_disk": "10MB", "+CondorMcpTest": "true",
+    })).cluster()
+    try:
+        job = await call("job_details", cluster_id=cluster, proc_id=0)
+        assert job["requested"]["gpus"] == 2
+    finally:
+        schedd.act(htcondor.JobAction.Remove, f"ClusterId == {cluster}")
 
 
 async def test_entry_point_over_stdio():

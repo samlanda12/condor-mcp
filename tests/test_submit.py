@@ -95,14 +95,14 @@ async def test_draft_typo_in_extra():
 async def test_draft_impossible_request():
     out = await call(
         "draft_submit", executable="/bin/sleep", gpus=1, memory_mb=64,
-        extra={"request_memory": "512GB"},
+        extra={"request_memory": "1000000000"},
     )
     assert "request_gpus            = 1" in out["submit_text"]
     assert out["submittable"] is True
     assert "TARGET.GPUs >= RequestGPUs" in out["requirements"]
-    assert out["slots"]["fit_requirements"] == 0  # the dev pool has no GPUs
+    assert out["slots"]["fit_requirements"] == 0  # no machine has a petabyte of memory
     (warning,) = [w for w in out["warnings"] if "No slot" in w]
-    assert "524288 MB and 1 GPUs" in warning  # what extra set, not memory_mb
+    assert "1000000000 MB and 1 GPUs" in warning  # what extra set, not memory_mb
 
 
 async def test_draft_with_empty_pool(monkeypatch):
