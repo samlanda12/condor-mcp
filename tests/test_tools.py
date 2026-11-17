@@ -39,7 +39,7 @@ async def test_job_details_running(live_jobs):
     assert job["requested"]["memory_mb"] == 64
     assert isinstance(job["requested"]["disk_kb"], int)
     assert job["files"]["transfer_input"] == []
-    assert "hold" not in job
+    assert job["in_queue"] is True and "hold" not in job and "ran_on" not in job
 
 
 async def test_job_details_held(live_jobs):
@@ -51,8 +51,29 @@ async def test_job_details_held(live_jobs):
     assert job["files"]["transfer_input"] == ["/nonexistent/condor-mcp-test-input.csv"]
 
 
+async def test_job_details_finished(finished_job):
+    job = await call("job_details", cluster_id=finished_job)
+    assert job["status"] == "completed" and job["in_queue"] is False
+    assert job["exit"]["code"] == 3 and job["exit"]["completed_at"]
+    assert job["ran_on"] and job["running_on"] is None
+    assert job["files"]["stdout"] == f"{finished_job}.0.out"
+
+
+def test_job_details_no_ran_on_for_a_job_that_never_started():
+    """A job whose input transfer failed keeps the slot it claimed in LastRemoteHost."""
+    import classad2 as classad
+
+    from condor_mcp.classads import summarize_job
+
+    ad = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "JobStatus": 3, "NumJobStarts": 0,
+                          "LastRemoteHost": "slot1@host", "RemoveReason": "via condor_rm",
+                          "LastHoldReason": "Transfer input files failure"})
+    job = summarize_job(ad)
+    assert "ran_on" not in job and job["last_hold_reason"] == "Transfer input files failure"
+
+
 async def test_job_details_missing():
-    with pytest.raises(ToolError, match="not in the queue"):
+    with pytest.raises(ToolError, match="neither the queue nor the schedd history"):
         await call("job_details", cluster_id=999999, proc_id=0)
 
 

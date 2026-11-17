@@ -172,12 +172,12 @@ Other clients take the same command and args in their own config format. Put any
 
 ## Tools
 
-`job_history` and `job_output` cover jobs that have left the queue; the other job tools
-see only jobs still in it.
+`job_details`, `job_history` and `job_output` cover jobs that have left the queue; the
+other job tools see only jobs still in it.
 
 | Tool | What it does |
 | --- | --- |
-| `job_details(cluster_id, proc_id=0)` | Everything about one job: status, where it runs, requested vs used resources, input/output files, and the hold reason in plain language if it is held. |
+| `job_details(cluster_id, proc_id=0)` | Everything about one job, queued or finished: status, where it runs or ran, requested vs used resources, input/output files, the hold reason in plain language if it is held, and the exit code or remove reason once it has ended. Finished jobs come from the schedd history. |
 | `list_jobs(owner="me", status=None, limit=50)` | One line per job plus a count of the owner's jobs by status. `owner` is `me`, `all`, or a username. |
 | `hold_reasons(owner="me")` | Every held job with HTCondor's message, the hold code, what the code means, and a tally by code. |
 | `job_history(owner="me", cluster_id=None, limit=20)` | Jobs that have left the queue, newest first: exit code for completed jobs, the reason for removed ones, plus wall time, memory and disk used vs requested, and the machine it ran on. Reads the schedd history, which drops the oldest jobs as it fills. |

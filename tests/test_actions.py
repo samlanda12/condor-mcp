@@ -17,15 +17,14 @@ ME = getpass.getuser()
 pytestmark = pytest.mark.anyio
 
 
-async def _wait_until_gone(cluster: int, timeout: float = 60) -> None:
-    """A removed job can sit in the queue as 'removed' while its shadow exits."""
+async def _wait_until_gone(cluster: int, timeout: float = 60) -> dict:
+    """A removed job can sit in the queue as 'removed' while its shadow exits.
+    Returns job_details once it reads the job from the history."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            await call("job_details", cluster_id=cluster)
-        except ToolError as exc:
-            assert "not in the queue" in str(exc)
-            return
+        job = await call("job_details", cluster_id=cluster)
+        if not job["in_queue"]:
+            return job
         await anyio.sleep(2)
     raise AssertionError(f"cluster {cluster} still in the queue after {timeout}s")
 
@@ -59,10 +58,14 @@ async def test_hold_release_remove(fresh_job):
     assert removed["action"] == "remove" and removed["changed"] == 1
     (row,) = removed["jobs"]
     assert row["status_before"] in ("idle", "running") and row["status_after"] == "removed"
-    await _wait_until_gone(fresh_job)
+    job = await _wait_until_gone(fresh_job)
+    assert job["status"] == "removed" and job["remove_reason"] == f"done with it (by user {ME})"
+    assert job["last_hold_reason"] == f"pausing for a test (by user {ME})"
+    assert ("ran_on" in job) == (job["usage"]["starts"] > 0)
     history = await call("job_history", cluster_id=fresh_job)
     (row,) = history["jobs"]
     assert row["status"] == "removed" and row["remove_reason"] == f"done with it (by user {ME})"
+    assert row["last_hold_reason"] == job["last_hold_reason"]
     assert "exit" not in row
 
     again = await call("remove_job", cluster_id=fresh_job, all_procs=True, reason="a second time")

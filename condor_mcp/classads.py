@@ -64,6 +64,10 @@ HOLD_CODES = {
     48: "the site's shadow prepare-job hook asked for the job to be held",
 }
 
+# Job ad attribute holding the file of each kind of output, and the submit command that sets it
+OUTPUT_FILES = {"stdout": ("Out", "output"), "stderr": ("Err", "error"), "log": ("UserLog", "log")}
+OUTPUT_ATTRS = {kind: attr for kind, (attr, _) in OUTPUT_FILES.items()}
+
 # Attributes we ask the schedd for when describing one job in full
 JOB_PROJECTION = [
     "ClusterId", "ProcId", "Owner", "JobStatus", "EnteredCurrentStatus",
@@ -72,8 +76,8 @@ JOB_PROJECTION = [
     "RequestCpus", "RequestMemory", "RequestDisk", "TransferInputSizeMB",
     "MemoryUsage", "RemoteWallClockTime", "NumJobStarts",
     "HoldReason", "HoldReasonCode", "HoldReasonSubCode", "ReleaseReason",
-    "ExitCode", "ExitBySignal", "ExitSignal",
-    "Out", "Err", "UserLog", "TransferInput",
+    "ExitCode", "ExitBySignal", "ExitSignal", "LastRemoteHost", "RemoveReason", "LastHoldReason",
+    *OUTPUT_ATTRS.values(), "TransferInput",
 ]
 
 # Enough for one line per job in a listing
@@ -92,7 +96,7 @@ HELD_PROJECTION = [
 # A job that has left the queue, as read from the schedd history
 HISTORY_PROJECTION = [
     "ClusterId", "ProcId", "Owner", "JobStatus", "EnteredCurrentStatus",
-    "Cmd", "Args", "Arguments", "QDate", "CompletionDate", "LastRemoteHost",
+    "Cmd", "Args", "Arguments", "QDate", "LastRemoteHost",
     "RemoteWallClockTime", "NumJobStarts",
     "RequestMemory", "MemoryUsage", "ResidentSetSize", "RequestDisk", "DiskUsage",
     "ExitCode", "ExitBySignal", "ExitSignal", "RemoveReason", "LastHoldReason",
@@ -100,7 +104,7 @@ HISTORY_PROJECTION = [
 
 # What job_output needs to find a job's files and explain a missing one
 OUTPUT_PROJECTION = [
-    "ClusterId", "ProcId", "Owner", "JobStatus", "NumJobStarts", "Iwd", "Out", "Err", "UserLog",
+    "ClusterId", "ProcId", "Owner", "JobStatus", "NumJobStarts", "Iwd", *OUTPUT_ATTRS.values(),
     "ShouldTransferFiles", "StreamOut", "StreamErr",
 ]
 
@@ -164,12 +168,8 @@ def requested(ad: classad.ClassAd) -> dict[str, Any]:
 
 
 def job_files(ad: classad.ClassAd) -> dict[str, Any]:
-    return {
-        "stdout": get(ad, "Out"),
-        "stderr": get(ad, "Err"),
-        "log": get(ad, "UserLog"),
-        "transfer_input": split_files(get(ad, "TransferInput")),
-    }
+    files = {kind: get(ad, attr) for kind, attr in OUTPUT_ATTRS.items()}
+    return {**files, "transfer_input": split_files(get(ad, "TransferInput"))}
 
 
 SLOT_RESOURCES = ("Cpus", "Memory", "Disk", "GPUs")
@@ -193,6 +193,37 @@ def hold_info(ad: classad.ClassAd) -> dict[str, Any]:
         "subcode": get(ad, "HoldReasonSubCode"),
         "meaning": HOLD_CODES.get(code, "see HoldReasonCode in the HTCondor manual"),
     }
+
+
+def exit_info(ad: classad.ClassAd) -> dict[str, Any]:
+    """How a completed job's program exited."""
+    return {
+        "code": get(ad, "ExitCode"),
+        "by_signal": bool(get(ad, "ExitBySignal", False)),
+        "signal": get(ad, "ExitSignal"),
+    }
+
+
+def job_ending(ad: classad.ClassAd) -> dict[str, Any]:
+    """How a job that left the queue (or is leaving it) ended: where it ran, and its
+    exit or why it was removed. Empty for a job that has not ended."""
+    status_code = get(ad, "JobStatus")
+    out: dict[str, Any] = {}
+    if status_code not in (JobStatus.COMPLETED, JobStatus.REMOVED):
+        return out
+    # LastRemoteHost is set once a slot is claimed, even if input transfer then fails
+    # there. A job that ran, was evicted, and then failed on a second slot still names
+    # that second slot: the ad keeps no record of the last slot it ran on (the event log does).
+    if get(ad, "NumJobStarts", 0):
+        out["ran_on"] = get(ad, "LastRemoteHost")
+    if status_code == JobStatus.COMPLETED:
+        out["exit"] = exit_info(ad)
+    else:
+        # A removed job is killed, so its exit fields describe the kill, not the program
+        out["remove_reason"] = get(ad, "RemoveReason")
+        if get(ad, "LastHoldReason"):  # often why it was removed: held, then given up on
+            out["last_hold_reason"] = get(ad, "LastHoldReason")
+    return out
 
 
 def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[str, Any]:
@@ -219,13 +250,9 @@ def summarize_job(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[
         out["hold"] = hold_info(ad)
     if get(ad, "ReleaseReason"):  # stays on the ad after a release, whatever the job did next
         out["last_release_reason"] = get(ad, "ReleaseReason")
-    if status_code == JobStatus.COMPLETED:
-        out["exit"] = {
-            "code": get(ad, "ExitCode"),
-            "by_signal": bool(get(ad, "ExitBySignal", False)),
-            "signal": get(ad, "ExitSignal"),
-            "completed_at": ts(get(ad, "CompletionDate")),
-        }
+    out.update(job_ending(ad))
+    if "exit" in out:
+        out["exit"]["completed_at"] = ts(get(ad, "CompletionDate"))
     extra = site_attrs(ad, extra_attrs)
     if extra:
         out["site"] = extra
@@ -281,25 +308,9 @@ def finished_job(ad: classad.ClassAd) -> dict[str, Any]:
         "memory_mb": {"requested": get(ad, "RequestMemory"), "used": get(ad, "MemoryUsage")},
         "disk_kb": {"requested": get(ad, "RequestDisk"), "used": get(ad, "DiskUsage")},
     }
-    # Both count a slot once it is claimed, even if input transfer then fails there.
-    # A job that ran, was evicted, and then failed on a second slot still names that
-    # second slot: the ad keeps no record of the last slot it ran on (the event log does).
-    if row["starts"]:
-        row["ran_on"] = get(ad, "LastRemoteHost")
+    if row["starts"]:  # counts a claimed slot even if input transfer then failed there
         row["wall_clock_s"] = get(ad, "RemoteWallClockTime")
-    status_code = get(ad, "JobStatus")
-    if status_code == JobStatus.COMPLETED:
-        row["exit"] = {
-            "code": get(ad, "ExitCode"),
-            "by_signal": bool(get(ad, "ExitBySignal", False)),
-            "signal": get(ad, "ExitSignal"),
-        }
-    elif status_code == JobStatus.REMOVED:
-        # A removed job is killed, so its exit fields describe the kill, not the program
-        row["remove_reason"] = get(ad, "RemoveReason")
-        if get(ad, "LastHoldReason"):  # often why it was removed: held, then given up on
-            row["last_hold_reason"] = get(ad, "LastHoldReason")
-    return row
+    return {**row, **job_ending(ad)}
 
 
 def summarize_slot(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[str, Any]:
