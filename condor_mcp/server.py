@@ -41,7 +41,7 @@ def _job_projection(base: list[str]) -> list[str]:
     return base + [a for a in settings.job_attrs if a not in base]
 
 
-def _find_job(cluster_id: int, proc_id: int, projection: list[str]) -> tuple[str, classad.ClassAd, bool]:
+def _find_job(cluster_id: int, proc_id: int, projection: list[str]) -> pool.FoundJob:
     """pool.find_job, with a job in neither the queue nor the history as a ToolError."""
     found = pool.find_job(cluster_id, proc_id, projection)
     if found is None:
@@ -74,9 +74,11 @@ def job_details(
     it has ended. Use this when a user asks about a specific job by ID. A job that
     has left the queue is read from the schedd history, and in_queue is false."""
     log.info("job_details cluster_id=%s proc_id=%s", cluster_id, proc_id)
-    schedd, ad, in_queue = _find_job(cluster_id, proc_id, _job_projection(classads.JOB_PROJECTION))
+    schedd, ad, in_queue, warnings = _find_job(cluster_id, proc_id, _job_projection(classads.JOB_PROJECTION))
     summary = classads.summarize_job(ad, settings.job_attrs)
     summary["in_queue"] = in_queue
+    if warnings:
+        summary["warnings"] = warnings
     pool.tag_schedd(summary, schedd)
     log.info("  -> job %s is %s, in_queue=%s", summary["job_id"], summary["status"], in_queue)
     return summary
@@ -268,7 +270,7 @@ def job_output(
     running job's stdout and stderr reach the submit host only when it ends;
     until then the log shows its progress."""
     log.info("job_output cluster_id=%s proc_id=%s which=%s tail_lines=%s", cluster_id, proc_id, which, tail_lines)
-    schedd, ad, in_queue = _find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
+    schedd, ad, in_queue, warnings = _find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
 
     if get(ad, "Owner") != settings.user:
         raise ToolError(
@@ -281,6 +283,8 @@ def job_output(
         "job_id": classads.job_id(ad), "status": classads.status_name(ad), "in_queue": in_queue, "which": which,
     }
     pool.tag_schedd(out, schedd)
+    if warnings:
+        out["warnings"] = warnings
     name = get(ad, attr)
     if not name or name == "/dev/null":
         out["note"] = (

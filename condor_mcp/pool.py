@@ -10,7 +10,7 @@ from __future__ import annotations
 import getpass
 import logging
 from pathlib import Path
-from typing import Annotated, Any, Callable, Iterator, TypeVar
+from typing import Annotated, Any, Callable, Iterator, NamedTuple, TypeVar
 
 import classad2 as classad
 import htcondor2 as htcondor
@@ -196,38 +196,51 @@ def query_history(
     return found
 
 
-def find_job(
-    cluster_id: int, proc_id: int, projection: list[str]
-) -> tuple[str, classad.ClassAd, bool] | None:
+class FoundJob(NamedTuple):
+    schedd: str
+    ad: classad.ClassAd
+    in_queue: bool
+    # Schedds that could not be checked for another job with the same ID, and why
+    warnings: list[str]
+
+
+def find_job(cluster_id: int, proc_id: int, projection: list[str]) -> FoundJob | None:
     """One job's ad from the queue or, once it has left the queue, from the history.
 
-    Returns (schedd name, ad, whether it is still in the queue), or None if neither has it.
-    Cluster IDs are only unique within one schedd, so an ID found on more than one is
-    refused rather than guessed. The exception is a queued job and a history hit on
-    another schedd that left the queue before the queued job was submitted: that is an
-    older job that reused the ID, so the queued job wins. Once a queue has the job, only
-    the other schedds' histories are read, only back that far, and not at all with a
-    single schedd."""
+    Returns None if neither has it. Cluster IDs are only unique within one schedd, so an
+    ID found on more than one is refused rather than guessed. The exception is a queued
+    job and a history hit on another schedd that left the queue before the queued job was
+    submitted: that is an older job that reused the ID, so the queued job wins. Once a
+    queue has the job, only the other schedds' histories are read, only back that far, and
+    not at all with a single schedd. One of those that cannot be read does not fail the
+    lookup: the queued job comes back with a warning that the ID could not be checked
+    there."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
     projection = [*projection, "QDate"]
-    found = [(name, ad, True) for name, ad in query_jobs(constraint, projection, 1)]
+    found = [FoundJob(name, ad, True, []) for name, ad in query_jobs(constraint, projection, 1)]
     if not found:
-        found = [(name, ad, False) for name, ad in query_history(constraint, projection, 1)]
+        found = [FoundJob(name, ad, False, []) for name, ad in query_history(constraint, projection, 1)]
     elif len(found) == 1 and len(settings.schedds) > 1:
         # The queued job's own schedd never reuses its ID, and reading its history could
         # find the job a second time if it leaves the queue between the two reads
-        queued_on, queued_ad, _ = found[0]
-        since = f"EnteredCurrentStatus < {get(queued_ad, 'QDate', 0)}"
-        found += [
-            (name, ad, False)
-            for name, schedd in schedds()
-            if name != queued_on
-            for ad in query_schedd_history(name, schedd, constraint, projection, 1, since)
-        ]
+        queued = found[0]
+        since = f"EnteredCurrentStatus < {get(queued.ad, 'QDate', 0)}"
+        for name, schedd in schedds():
+            if name == queued.schedd:
+                continue
+            try:
+                ads = query_schedd_history(name, schedd, constraint, projection, 1, since)
+            except ToolError as exc:
+                queued.warnings.append(
+                    f"{exc} So schedd {name} could not be checked for a newer job "
+                    f"{cluster_id}.{proc_id}; this is the one queued on {queued.schedd}."
+                )
+                continue
+            found += [FoundJob(name, ad, False, []) for ad in ads]
     if len(found) > 1:
         raise ToolError(
             f"Job {cluster_id}.{proc_id} exists on more than one schedd "
-            f"({', '.join(name for name, _, _ in found)}), so the ID is ambiguous. "
+            f"({', '.join(job.schedd for job in found)}), so the ID is ambiguous. "
             "Set CONDOR_MCP_SCHEDDS to the one that holds the job."
         )
     return found[0] if found else None

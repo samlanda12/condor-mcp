@@ -72,7 +72,7 @@ async def test_job_output_relative_path_without_iwd(monkeypatch):
     from condor_mcp import pool
 
     ad = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "Owner": pool.settings.user, "JobStatus": 4, "Out": "job.out"})
-    monkeypatch.setattr(pool, "find_job", lambda *args: ("local", ad, False))
+    monkeypatch.setattr(pool, "find_job", lambda *args: pool.FoundJob("local", ad, False, []))
     out = await call("job_output", cluster_id=7)
     assert "path" not in out and "records no submit directory (Iwd)" in out["note"]
 
@@ -111,12 +111,15 @@ async def test_job_output_refuses_an_id_on_two_schedds(finished_job, monkeypatch
 
 def _two_schedds(monkeypatch, queues, histories):
     """Stand in for schedds a and b: queues and histories map a schedd name to its ads
-    of job 7.0, and a history read stops where its since expression turns true."""
+    of job 7.0, and a history read stops where its since expression turns true. A
+    history given as an exception raises it, as an unreadable history does."""
     import classad2 as classad
 
     from condor_mcp import pool
 
     def history(name, schedd, constraint, projection, limit, since=None):
+        if isinstance(histories.get(name), Exception):
+            raise histories[name]
         ads = []
         for ad in histories.get(name, []):  # newest first, like the schedd
             if since and classad.ExprTree(since).eval(ad):
@@ -142,7 +145,7 @@ def test_find_job_prefers_the_queue_over_an_older_job_in_another_history(monkeyp
     queued = _job(JobStatus=1, QDate=1000)
     older = _job(JobStatus=4, QDate=100, EnteredCurrentStatus=500)
     _two_schedds(monkeypatch, {"a": [queued]}, {"b": [older]})
-    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True)
+    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True, [])
 
 
 def test_find_job_refuses_a_queued_id_another_history_finished_since(monkeypatch):
@@ -163,7 +166,41 @@ def test_find_job_skips_the_queued_schedds_own_history(monkeypatch):
 
     queued = _job(JobStatus=2, QDate=1000)
     _two_schedds(monkeypatch, {"a": [queued]}, {"a": [_job(JobStatus=4, QDate=1000, EnteredCurrentStatus=1100)]})
-    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True)
+    assert pool.find_job(7, 0, ["JobStatus"]) == ("a", queued, True, [])
+
+
+def test_find_job_returns_the_queued_job_when_another_history_fails(monkeypatch):
+    """B's history cannot be read, so a newer 7.0 there cannot be ruled out; the queued
+    job still comes back, with a warning naming B."""
+    from condor_mcp import pool
+
+    queued = _job(JobStatus=1, QDate=1000)
+    down = ToolError("Could not read the job history of the schedd (b): no answer within 60 s.")
+    _two_schedds(monkeypatch, {"a": [queued]}, {"b": down})
+    schedd, ad, in_queue, (warning,) = pool.find_job(7, 0, ["JobStatus"])
+    assert (schedd, ad, in_queue) == ("a", queued, True)
+    assert warning.startswith("Could not read the job history of the schedd (b)")
+    assert "schedd b could not be checked for a newer job 7.0; this is the one queued on a" in warning
+
+
+def test_find_job_still_fails_for_a_finished_job_when_a_history_fails(monkeypatch):
+    """With no queue holding the job there is nothing safe to return."""
+    from condor_mcp import pool
+
+    _two_schedds(monkeypatch, {}, {"a": [_job(JobStatus=4)], "b": ToolError("history of b down")})
+    with pytest.raises(ToolError, match="history of b down"):
+        pool.find_job(7, 0, ["JobStatus"])
+
+
+async def test_job_details_shows_the_warning(monkeypatch):
+    from condor_mcp import pool
+
+    queued = _job(JobStatus=1, QDate=1000, Owner=pool.settings.user)
+    _two_schedds(monkeypatch, {"a": [queued]}, {"b": ToolError("history of b down.")})
+    job = await call("job_details", cluster_id=7)
+    assert job["in_queue"] is True and job["schedd"] == "a"
+    (warning,) = job["warnings"]
+    assert warning.startswith("history of b down.")
 
 
 def test_find_job_refuses_an_id_queued_on_two_schedds(monkeypatch):
