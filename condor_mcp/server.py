@@ -172,11 +172,11 @@ def job_history(
     limit: Annotated[int, Field(ge=1, le=200, description="Most jobs to list, newest first.")] = 20,
 ) -> dict[str, Any]:
     """List jobs that have left the queue, newest first: completed ones with their
-    exit code, removed ones with the remove reason. Each row also gives wall time,
-    memory and disk used versus requested, and the machine the job ran on. Use this
-    for "did my job finish", "why did it fail", or "how much memory did it use"
-    across recent jobs. Jobs still in the queue are not listed; use list_jobs for
-    those. job_details covers one job by ID whether queued or finished."""
+    exit code, removed ones with the remove reason. Each row also gives memory and
+    disk used versus requested and, for jobs that started, wall time and the machine
+    they ran on. Use this for "did my job finish", "why did it fail", or "how much
+    memory did it use" across recent jobs. Jobs still in the queue are not listed; use
+    list_jobs for those. job_details covers one job by ID whether queued or finished."""
     log.info("job_history owner=%s cluster_id=%s limit=%s", owner, cluster_id, limit)
     constraint, name = pool.owner_constraint(owner)
     if cluster_id is not None:
