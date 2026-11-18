@@ -227,7 +227,7 @@ read once at startup, and an empty value is the same as unset.
 | `CONDOR_MCP_SLOT_ATTRS` | none | Extra slot attributes to return from `pool_status(detail=True)`, comma-separated. |
 | `CONDOR_MCP_CALL_LOG` | off | File to log each tool call to. Handy during a demo. |
 | `CONDOR_MCP_WORKDIR` | `~/condor-mcp-jobs` | Where drafted jobs run from (their `initialdir`) and where their log, stdout and stderr land, named after the job id. Relative paths in a draft are taken relative to it. Created at startup if missing. |
-| `CONDOR_MCP_TIMEOUT` | `60` | Seconds to wait for a schedd or the collector before a tool gives up with an error. A submit, hold, release or remove that times out may still have taken effect, and the error says so. |
+| `CONDOR_MCP_TIMEOUT` | `60` | Seconds to wait for a schedd or the collector before a tool gives up with an error, at most 3600. A submit, hold, release or remove that times out may still have taken effect, and the error says so. |
 
 GPU attributes are always fetched. On a pool without GPUs they come back empty, which is
 expected.

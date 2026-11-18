@@ -5,6 +5,7 @@ Schedd.history and Schedd.submit would otherwise wait on forever."""
 
 from __future__ import annotations
 
+import signal
 import socket
 import threading
 import time
@@ -61,6 +62,57 @@ def test_worker_gives_up_and_recovers():
         worker.run(0.5, time.sleep, 30)
     assert time.monotonic() - start < 5
     assert worker.run(10, time.monotonic) > 0  # a fresh child took over
+
+
+def test_hung_call_does_not_hold_up_another():
+    from condor_mcp import worker
+
+    errors: list[Exception] = []
+
+    def hang() -> None:
+        try:
+            worker.run(3, time.sleep, 30)
+        except worker.NoAnswer as exc:
+            errors.append(exc)
+
+    hung = threading.Thread(target=hang)
+    hung.start()
+    time.sleep(0.5)  # the hung call is under way
+    start = time.monotonic()
+    assert worker.run(3, time.monotonic) > 0
+    assert time.monotonic() - start < 1
+    hung.join()
+    assert len(errors) == 1
+
+
+def test_child_ends_itself_after_its_deadline():
+    """A server that exits mid-call never kills the child, so the child's own alarm must."""
+    from condor_mcp import worker
+
+    proc, conn = worker._start()
+    try:
+        conn.send((1, time.sleep, (30,)))
+        assert proc.wait(1 + worker.CHILD_GRACE + 5) == -signal.SIGALRM
+    finally:
+        worker._stop((proc, conn))
+
+
+def test_crashed_child_is_not_blamed_on_the_timeout():
+    import os
+
+    from condor_mcp import pool
+
+    with pytest.raises(pool.NoAnswer, match=r"exited before it answered \(status 3\)$"):
+        pool.call(os._exit, 3)
+
+
+def test_timeout_must_be_finite():
+    from pydantic import ValidationError
+
+    from condor_mcp import pool
+
+    with pytest.raises(ValidationError):
+        pool.Settings(timeout=float("inf"))
 
 
 def test_worker_reraises_htcondor_errors():

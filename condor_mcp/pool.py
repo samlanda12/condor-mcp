@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     # Where drafted jobs run from (their initialdir) and where their log,
     # stdout and stderr land.
     workdir: Path = Field(default_factory=lambda: Path.home() / "condor-mcp-jobs")
-    # Seconds to wait for a schedd or the collector before giving up on a call.
-    timeout: float = Field(default=60, gt=0)
+    # Seconds to wait for a schedd or the collector before giving up on a call. Capped.
+    timeout: float = Field(default=60, gt=0, le=3600)
 
     @field_validator("schedds", "job_attrs", "slot_attrs", mode="before")
     @classmethod
@@ -93,7 +93,9 @@ def call(fn: Callable[..., T], *args: Any) -> T:
     try:
         return worker.run(settings.timeout, fn, *args)
     except NoAnswer as exc:
-        raise NoAnswer(f"{exc}; CONDOR_MCP_TIMEOUT sets the limit") from None
+        if not exc.timed_out:
+            raise
+        raise NoAnswer(f"{exc}; CONDOR_MCP_TIMEOUT sets the limit", timed_out=True) from None
 
 
 def schedds() -> Iterator[tuple[str, htcondor.Schedd]]:

@@ -3,8 +3,10 @@
 Some htcondor2 calls (Schedd.history, Schedd.submit) hang forever when a daemon accepts
 the connection but never answers, and they hold the GIL while waiting, so one such call
 in the server would freeze it. Every call that talks to a daemon therefore runs in a
-long-lived child process. If a call misses its deadline, the child is killed (the next
-call starts a fresh one) and the caller gets NoAnswer.
+child process, one call per child at a time, so a hung call holds up only its own caller.
+Children are reused between calls. If a call misses its deadline, its child is killed and
+the caller gets NoAnswer. The child also arms an alarm for each call that kills it a little
+after the deadline, so it cannot outlive a server that exits mid-call.
 
 Arguments and results must pickle. Collector and Submit objects don't, so the calls below
 take the pool string or submit text and build them in the child. HTCondorException
@@ -19,7 +21,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from multiprocessing.connection import Connection
 from typing import Any, Callable, TypeVar
 
@@ -28,16 +29,24 @@ import htcondor2 as htcondor
 
 T = TypeVar("T")
 
+# How long after its deadline a child in a call kills itself, if the server has not
+CHILD_GRACE = 5
+# Idle children kept for reuse; more are stopped once their call ends
+MAX_IDLE = 4
+
 
 class NoAnswer(Exception):
-    """A call did not finish before its deadline, or the child died during it. For a
-    write, whether it took effect is unknown."""
+    """A call did not finish before its deadline (timed_out), or its child died during it.
+    For a write, whether it took effect is unknown."""
+
+    def __init__(self, message: str, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
-# One call at a time: the child serves calls in order, and the lock keeps one caller's
-# reply from reaching another.
-_lock = threading.Lock()
-_child: tuple[subprocess.Popen[bytes], Connection] | None = None
+Child = tuple[subprocess.Popen[bytes], Connection]
+_idle: list[Child] = []
+_idle_lock = threading.Lock()
 
 
 def _serve(conn: Connection) -> None:
@@ -45,69 +54,91 @@ def _serve(conn: Connection) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # a Ctrl-C at the server is the server's to handle
     while True:
         try:
-            fn, args = conn.recv()
+            timeout, fn, args = conn.recv()
         except EOFError:  # the server has gone
             return
+        # SIGALRM's default action ends the process, even inside a C call holding the GIL
+        signal.setitimer(signal.ITIMER_REAL, timeout + CHILD_GRACE)
         try:
             reply: tuple[str, Any] = ("ok", fn(*args))
         except htcondor.HTCondorException as exc:
             reply = ("htcondor", str(exc))
         except Exception as exc:
             reply = ("error", exc)
+        signal.setitimer(signal.ITIMER_REAL, 0)
         try:
             conn.send(reply)
         except Exception as exc:  # a result or exception that does not pickle
             conn.send(("error", RuntimeError(f"{type(exc).__name__}: {exc}")))
 
 
-def _start() -> tuple[subprocess.Popen[bytes], Connection]:
+def _start() -> Child:
     """A fresh interpreter running this module, not a fork (the server has threads, and a
     fork could inherit a held lock) and not multiprocessing's spawn (which re-runs the
     server's __main__ in the child, and fails when that is not a file). Its stdout goes
     nowhere, since with the stdio transport the server's stdout carries the protocol."""
     ours, theirs = multiprocessing.Pipe()
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "condor_mcp.worker", str(theirs.fileno())],
-        pass_fds=[theirs.fileno()], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, env=env,
-    )
-    theirs.close()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "condor_mcp.worker", str(theirs.fileno())],
+            pass_fds=[theirs.fileno()], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, env=env,
+        )
+    except OSError as exc:  # out of processes, memory or file descriptors
+        ours.close()
+        raise NoAnswer(f"could not start the process that makes the call: {exc}") from None
+    finally:
+        theirs.close()
     return proc, ours
 
 
-def _stop() -> None:
-    global _child
-    if _child is not None:
-        proc, conn = _child
-        _child = None
-        proc.kill()
+def _stop(child: Child) -> None:
+    proc, conn = child
+    conn.close()
+    proc.kill()
+    try:
         proc.wait(5)
-        conn.close()
+    except subprocess.TimeoutExpired:  # stuck in the kernel; subprocess reaps it later
+        pass
+
+
+def _take() -> Child:
+    with _idle_lock:
+        while _idle:
+            child = _idle.pop()
+            if child[0].poll() is None:
+                return child
+            child[1].close()
+    return _start()
+
+
+def _give_back(child: Child) -> None:
+    with _idle_lock:
+        if len(_idle) < MAX_IDLE:
+            _idle.append(child)
+            return
+    _stop(child)
 
 
 def run(timeout: float, fn: Callable[..., T], *args: Any) -> T:
-    """fn(*args) in the child, raising NoAnswer after timeout seconds, time spent waiting
-    behind another call included. fn must be importable by name, like the functions below."""
-    global _child
-    deadline = time.monotonic() + timeout
-    if not _lock.acquire(timeout=timeout):
-        raise NoAnswer(f"no answer within {timeout:g} s (an earlier call was still running)")
+    """fn(*args) in a child, raising NoAnswer after timeout seconds. fn must be importable
+    by name, like the functions below."""
+    child = _take()
+    proc, conn = child
     try:
-        if _child is None or _child[0].poll() is not None:
-            _stop()
-            _child = _start()
-        _, conn = _child
-        try:
-            conn.send((fn, args))
-            if not conn.poll(max(0.0, deadline - time.monotonic())):
-                _stop()
-                raise NoAnswer(f"no answer within {timeout:g} s")
-            status, value = conn.recv()
-        except (EOFError, OSError):  # the child died
-            _stop()
-            raise NoAnswer("the process making the call exited before it answered") from None
-    finally:
-        _lock.release()
+        conn.send((timeout, fn, args))
+        if not conn.poll(timeout):
+            raise NoAnswer(f"no answer within {timeout:g} s", timed_out=True)
+        status, value = conn.recv()
+    except (EOFError, OSError):  # the child died
+        _stop(child)
+        raise NoAnswer(
+            f"the process making the call exited before it answered (status {proc.returncode})"
+        ) from None
+    except BaseException:  # a timeout, or an argument that does not pickle
+        _stop(child)
+        raise
+    _give_back(child)
     if status == "htcondor":
         raise htcondor.HTCondorException(value)
     if status == "error":
