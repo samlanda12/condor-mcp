@@ -223,6 +223,31 @@ async def test_submit_job_queues_it(submitted_job):
     assert "hold" not in job
 
 
+async def test_submit_job_queues_inline_item_list(tmp_path):
+    """The items of a queue ... from ( list reach the schedd, and so does the executable
+    pinned against the file's directory."""
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/sh\nsleep 600\n")
+    script.chmod(0o755)
+    sub = tmp_path / "job.sub"
+    sub.write_text(
+        "executable = run.sh\narguments = $(item)\nrequest_memory = 64MB\nrequest_disk = 10MB\n"
+        f"+{TAG} = true\nqueue item from (\n    a\n    b\n)\n"
+    )
+    out = await call("submit_job", submit_file=str(sub))
+    cluster = out["cluster_id"]
+    try:
+        assert out["jobs"] == 2
+        ads = htcondor.Schedd().query(f"ClusterId == {cluster}", projection=["ProcId", "Cmd", "Args", "Iwd"])
+        ads.sort(key=lambda ad: ad["ProcId"])
+        assert [(ad["Cmd"], ad["Args"], ad["Iwd"]) for ad in ads] == [
+            (str(script), "a", str(tmp_path)),
+            (str(script), "b", str(tmp_path)),
+        ]
+    finally:
+        htcondor.Schedd().act(htcondor.JobAction.Remove, f"ClusterId == {cluster}")
+
+
 async def test_submit_refuses_missing_executable():
     with pytest.raises(ToolError, match="Refusing to submit.*Can't access executable"):
         await call("submit_job", submit_text=f"executable = /nonexistent/x\n+{TAG} = true\nqueue 1\n")

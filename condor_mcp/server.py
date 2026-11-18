@@ -516,14 +516,16 @@ def submit_job(
 
     name, schedd = next(pool.schedds())
     try:
-        # As text: a Submit object cannot be sent to the process that makes the call
-        result = pool.call(worker.schedd_submit, schedd, str(description))
+        # As text plus what prepare() pinned: a Submit object cannot be sent to the process
+        # that makes the call, and str(description) loses an inline queue item list
+        pinned = {key: description[key] for key in ("initialdir", "executable") if key in description}
+        result = pool.call(worker.schedd_submit, schedd, text, pinned)
     except NoAnswer as exc:
         raise ToolError(
             f"The schedd ({name}) did not answer the submit: {exc}. The jobs may or may not "
             "have been queued; check with list_jobs before submitting again."
         ) from exc
-    except (htcondor.HTCondorException, RuntimeError) as exc:
+    except (htcondor.HTCondorException, RuntimeError, ValueError) as exc:
         raise ToolError(f"The schedd ({name}) refused the submit: {exc}") from exc
     cluster = result.cluster()
     try:

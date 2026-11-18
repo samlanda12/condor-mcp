@@ -134,8 +134,11 @@ def schedd_act(
     return schedd.act(action, constraint, reason=reason)
 
 
-def schedd_submit(schedd: htcondor.Schedd, text: str) -> htcondor.SubmitResult:
-    return schedd.submit(htcondor.Submit(text))
+def schedd_submit(schedd: htcondor.Schedd, text: str, overrides: dict[str, str]) -> htcondor.SubmitResult:
+    """Submit text, with overrides on top. Takes text because str(Submit) drops inline queue items."""
+    description = htcondor.Submit(text)
+    description.update(overrides)
+    return schedd.submit(description)
 
 
 def collector_query(
