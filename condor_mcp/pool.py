@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import getpass
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterator, NamedTuple, TypeVar
 
@@ -37,7 +38,7 @@ class Settings(BaseSettings):
     # Collector host[:port]; empty means COLLECTOR_HOST from the HTCondor config.
     collector: str | None = None
     # Schedd names to query, looked up through the collector. Empty means the
-    # local schedd. Several names are queried in turn and merged.
+    # local schedd. Several names are queried at once and merged.
     schedds: CsvList = []
     # Whose jobs "my jobs" means.
     user: str = Field(default_factory=getpass.getuser)
@@ -98,25 +99,35 @@ def call(fn: Callable[..., T], *args: Any) -> T:
         raise NoAnswer(f"{exc}; CONDOR_MCP_TIMEOUT sets the limit", timed_out=True) from None
 
 
-def schedds() -> Iterator[tuple[str, htcondor.Schedd]]:
-    """Yield (name, Schedd) for every configured schedd, or the local one."""
+def schedd_names() -> list[str]:
+    """The configured schedds, or "local" for the local one."""
+    return settings.schedds or ["local"]
+
+
+def locate(name: str) -> htcondor.Schedd:
+    """The Schedd for one of schedd_names(), looked up through the collector."""
     if not settings.schedds:
-        yield "local", htcondor.Schedd()
-        return
-    for name in settings.schedds:
-        try:
-            ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Schedd, name)
-        except CONDOR_ERRORS as exc:
-            raise ToolError(
-                f"Could not reach the collector to find schedd {name!r}: {exc}. "
-                "Check CONDOR_MCP_COLLECTOR."
-            ) from exc
-        if ad is None:  # locate() returns None rather than raising for an unknown name
-            raise ToolError(
-                f"The collector knows no schedd named {name!r}. Check CONDOR_MCP_SCHEDDS "
-                "against `condor_status -schedd`."
-            )
-        yield name, htcondor.Schedd(ad)
+        return htcondor.Schedd()
+    try:
+        ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Schedd, name)
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not reach the collector to find schedd {name!r}: {exc}. "
+            "Check CONDOR_MCP_COLLECTOR."
+        ) from exc
+    if ad is None:  # locate() returns None rather than raising for an unknown name
+        raise ToolError(
+            f"The collector knows no schedd named {name!r}. Check CONDOR_MCP_SCHEDDS "
+            "against `condor_status -schedd`."
+        )
+    return htcondor.Schedd(ad)
+
+
+def schedds() -> Iterator[tuple[str, htcondor.Schedd]]:
+    """Yield (name, Schedd) for every configured schedd, or the local one. One that
+    cannot be found fails the whole call; the write tools use this."""
+    for name in schedd_names():
+        yield name, locate(name)
 
 
 def tag_schedd(row: dict[str, Any], name: str) -> dict[str, Any]:
@@ -125,6 +136,33 @@ def tag_schedd(row: dict[str, Any], name: str) -> dict[str, Any]:
     if len(settings.schedds) > 1:
         row["schedd"] = name
     return row
+
+
+Ads = list[tuple[str, classad.ClassAd]]
+
+
+def ask_schedds(
+    ask: Callable[[str], list[classad.ClassAd]], failed: dict[str, str] | None = None
+) -> tuple[Ads, dict[str, str]]:
+    """Run ask(name) for every configured schedd at once and merge the ads into (schedd
+    name, ad) pairs, so a schedd that does not answer costs one timeout, not one each.
+
+    A schedd whose ask raises ToolError is left out. Returns the pairs and failed, updated
+    with why each such schedd failed; schedds already in failed are not asked again.
+    Raises ToolError only when every schedd has failed."""
+    failed = dict(failed or {})
+    names = [name for name in schedd_names() if name not in failed]
+    with ThreadPoolExecutor(max_workers=len(names) or 1) as threads:
+        futures = [(name, threads.submit(ask, name)) for name in names]
+    found: Ads = []
+    for name, future in futures:
+        try:
+            found += [(name, ad) for ad in future.result()]
+        except ToolError as exc:
+            failed[name] = str(exc)
+    if len(failed) == len(schedd_names()):
+        raise ToolError(" ".join(failed.values()))
+    return found, failed
 
 
 def query_schedd(
@@ -148,15 +186,13 @@ def query_jobs(
     constraint: str,
     projection: list[str],
     limit: int = -1,
-) -> list[tuple[str, classad.ClassAd]]:
+    failed: dict[str, str] | None = None,
+) -> tuple[Ads, dict[str, str]]:
     """Run one job query against every configured schedd and merge the results.
 
-    Returns (schedd name, ad) pairs. The limit applies per schedd."""
-    return [
-        (name, ad)
-        for name, schedd in schedds()
-        for ad in query_schedd(name, schedd, constraint, projection, limit)
-    ]
+    Returns (schedd name, ad) pairs and, for each schedd that could not be read, why; see
+    ask_schedds. The limit applies per schedd."""
+    return ask_schedds(lambda name: query_schedd(name, locate(name), constraint, projection, limit), failed)
 
 
 def query_schedd_history(
@@ -182,20 +218,19 @@ def query_history(
     constraint: str,
     projection: list[str],
     limit: int,
-) -> list[tuple[str, classad.ClassAd]]:
+) -> tuple[Ads, dict[str, str]]:
     """Read the job history of every configured schedd: jobs that completed or were
     removed and have left the queue.
 
-    Returns (schedd name, ad) pairs, most recently finished first. The limit applies
-    per schedd, so the merged list can be longer; callers trim it."""
-    found = [
-        (name, ad)
-        for name, schedd in schedds()
-        for ad in query_schedd_history(name, schedd, constraint, projection, limit)
-    ]
+    Returns (schedd name, ad) pairs, most recently finished first, and the schedds that
+    could not be read, as query_jobs does. The limit applies per schedd, so the merged
+    list can be longer; callers trim it."""
+    found, failed = ask_schedds(
+        lambda name: query_schedd_history(name, locate(name), constraint, projection, limit)
+    )
     # Each schedd answers newest first; the sort interleaves several schedds the same way
     found.sort(key=lambda pair: get(pair[1], "EnteredCurrentStatus", 0), reverse=True)
-    return found
+    return found, failed
 
 
 class FoundJob(NamedTuple):
@@ -214,31 +249,40 @@ def find_job(cluster_id: int, proc_id: int, projection: list[str]) -> FoundJob |
     job and a history hit on another schedd that left the queue before the queued job was
     submitted: that is an older job that reused the ID, so the queued job wins. Once a
     queue has the job, only the other schedds' histories are read, only back that far, and
-    not at all with a single schedd. One of those that cannot be read does not fail the
-    lookup: the queued job comes back with a warning that the ID could not be checked
-    there."""
+    not at all with a single schedd.
+
+    A schedd that cannot be read does not fail the lookup of a queued job: it comes back
+    with a warning that the ID could not be checked there. A job in no queue that answered
+    fails instead, since the job may be on the schedd that did not."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
     projection = [*projection, "QDate"]
-    found = [FoundJob(name, ad, True, []) for name, ad in query_jobs(constraint, projection, 1)]
+    in_queues, failed = query_jobs(constraint, projection, 1)
+    found = [FoundJob(name, ad, True, []) for name, ad in in_queues]
     if not found:
-        found = [FoundJob(name, ad, False, []) for name, ad in query_history(constraint, projection, 1)]
+        if failed:
+            raise ToolError(" ".join(failed.values()))
+        finished, failed = query_history(constraint, projection, 1)
+        if failed:
+            raise ToolError(" ".join(failed.values()))
+        found = [FoundJob(name, ad, False, []) for name, ad in finished]
     elif len(found) == 1 and len(settings.schedds) > 1:
         # The queued job's own schedd never reuses its ID, and reading its history could
         # find the job a second time if it leaves the queue between the two reads
         queued = found[0]
         since = f"EnteredCurrentStatus < {get(queued.ad, 'QDate', 0)}"
-        for name, schedd in schedds():
+
+        def other_history(name: str) -> list[classad.ClassAd]:
             if name == queued.schedd:
-                continue
-            try:
-                ads = query_schedd_history(name, schedd, constraint, projection, 1, since)
-            except ToolError as exc:
-                queued.warnings.append(
-                    f"{exc} So schedd {name} could not be checked for a newer job "
-                    f"{cluster_id}.{proc_id}; this is the one queued on {queued.schedd}."
-                )
-                continue
-            found += [FoundJob(name, ad, False, []) for ad in ads]
+                return []
+            return query_schedd_history(name, locate(name), constraint, projection, 1, since)
+
+        finished, failed = ask_schedds(other_history, failed)
+        found += [FoundJob(name, ad, False, []) for name, ad in finished]
+        queued.warnings.extend(
+            f"{why} So schedd {name} could not be checked for another job "
+            f"{cluster_id}.{proc_id}; this is the one queued on {queued.schedd}."
+            for name, why in failed.items()
+        )
     if len(found) > 1:
         raise ToolError(
             f"Job {cluster_id}.{proc_id} exists on more than one schedd "

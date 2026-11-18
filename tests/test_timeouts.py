@@ -5,6 +5,7 @@ Schedd.history and Schedd.submit would otherwise wait on forever."""
 
 from __future__ import annotations
 
+import re
 import signal
 import socket
 import threading
@@ -20,12 +21,10 @@ TIMEOUT = 2
 
 
 @pytest.fixture
-def silent_schedd(monkeypatch):
-    """Point the server at one schedd, named "silent", that never answers, with a short timeout."""
+def silent_ad():
+    """The local schedd's ad, pointed at a socket that accepts connections and never replies."""
     import classad2 as classad
     import htcondor2 as htcondor
-
-    from condor_mcp import pool
 
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
@@ -44,14 +43,29 @@ def silent_schedd(monkeypatch):
     ad.update(htcondor.Collector().locate(htcondor.DaemonType.Schedd))
     for attr in ("MyAddress", "ScheddIpAddr"):
         ad[attr] = f"<127.0.0.1:{server.getsockname()[1]}>"
-    monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update={"timeout": TIMEOUT}))
-    monkeypatch.setattr(pool, "schedds", lambda: iter([("silent", htcondor.Schedd(ad))]))
     try:
-        yield
+        yield ad
     finally:
         server.close()
         for conn in held:
             conn.close()
+
+
+def _use_schedds(monkeypatch, schedds):
+    """Point the server at these schedds, by name, with a short timeout."""
+    from condor_mcp import pool
+
+    update = {"timeout": TIMEOUT, "schedds": list(schedds)}
+    monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update=update))
+    monkeypatch.setattr(pool, "locate", lambda name: schedds[name])
+
+
+@pytest.fixture
+def silent_schedd(monkeypatch, silent_ad):
+    """One schedd, named "silent", that never answers."""
+    import htcondor2 as htcondor
+
+    _use_schedds(monkeypatch, {"silent": htcondor.Schedd(silent_ad)})
 
 
 def test_worker_gives_up_and_recovers():
@@ -136,6 +150,26 @@ async def test_history_times_out(silent_schedd):
 async def test_queue_query_times_out(silent_schedd):
     with pytest.raises(ToolError, match=rf"schedd \(silent\): no answer within {TIMEOUT} s"):
         await call("list_jobs")
+
+
+async def test_reads_leave_out_a_schedd_that_does_not_answer(monkeypatch, silent_ad, live_jobs):
+    """Each tool waits one timeout for the silent schedd, however many reads it makes."""
+    import htcondor2 as htcondor
+
+    _use_schedds(monkeypatch, {"real": htcondor.Schedd(), "silent": htcondor.Schedd(silent_ad)})
+    no_answer = rf"schedd \(silent\): no answer within {TIMEOUT} s"
+    for tool, args in [
+        ("list_jobs", {}),
+        ("hold_reasons", {}),
+        ("job_history", {}),
+        ("job_details", {"cluster_id": live_jobs["running"]}),
+    ]:
+        start = time.monotonic()
+        out = await call(tool, **args)
+        assert time.monotonic() - start < TIMEOUT + 1.5, tool
+        (warning,) = out["warnings"]
+        assert re.search(no_answer, warning), (tool, warning)
+    assert out["schedd"] == "real" and out["in_queue"] is True
 
 
 async def test_submit_timeout_says_the_outcome_is_unknown(silent_schedd, submitted_job):

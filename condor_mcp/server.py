@@ -99,12 +99,13 @@ def list_jobs(
     still in the queue are listed; job_history lists jobs that have left it."""
     log.info("list_jobs owner=%s status=%s limit=%s", owner, status, limit)
     constraint, name = pool.owner_constraint(owner)
-    counts = Counter(
-        classads.status_name(ad) for _, ad in pool.query_jobs(constraint, ["JobStatus"])
-    )
+    counted, failed = pool.query_jobs(constraint, ["JobStatus"])
+    counts = Counter(classads.status_name(ad) for _, ad in counted)
     if status:
         constraint += f" && JobStatus == {classads.STATUS_CODE[status]}"
-    found = pool.query_jobs(constraint, _job_projection(classads.JOB_LIST_PROJECTION), limit=limit)
+    found, failed = pool.query_jobs(
+        constraint, _job_projection(classads.JOB_LIST_PROJECTION), limit=limit, failed=failed
+    )
     found.sort(key=lambda pair: (get(pair[1], "ClusterId", 0), get(pair[1], "ProcId", 0)))
     rows = []
     for schedd, ad in found[:limit]:
@@ -113,7 +114,7 @@ def list_jobs(
             row["site"] = classads.site_attrs(ad, settings.job_attrs)
         rows.append(pool.tag_schedd(row, schedd))
     matching = counts[status] if status else sum(counts.values())
-    out = {
+    out: dict[str, Any] = {
         "owner": name or "all",
         "status_filter": status,
         "counts_by_status": dict(counts),
@@ -127,6 +128,8 @@ def list_jobs(
             f"No {what} in the queue {who}. Jobs that finished have left the queue; "
             "job_history lists them."
         )
+    if failed:
+        out["warnings"] = list(failed.values())
     log.info("  -> %d of %d jobs", len(rows), matching)
     return out
 
@@ -139,7 +142,7 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     jobs". A job that is not held will not appear; check it with job_details."""
     log.info("hold_reasons owner=%s", owner)
     constraint, name = pool.owner_constraint(owner)
-    found = pool.query_jobs(
+    found, failed = pool.query_jobs(
         f"({constraint}) && JobStatus == {int(JobStatus.HELD)}",
         _job_projection(classads.HELD_PROJECTION),
     )
@@ -162,6 +165,8 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     }
     if not rows:
         out["note"] = f"No held jobs for {name or 'anyone'}."
+    if failed:
+        out["warnings"] = list(failed.values())
     log.info("  -> %d held", len(rows))
     return out
 
@@ -185,7 +190,7 @@ def job_history(
     if cluster_id is not None:
         constraint = f"({constraint}) && ClusterId == {cluster_id}"
     # One extra per schedd, so a list cut at the limit can say so
-    found = pool.query_history(constraint, _job_projection(classads.HISTORY_PROJECTION), limit + 1)
+    found, failed = pool.query_history(constraint, _job_projection(classads.HISTORY_PROJECTION), limit + 1)
     rows = []
     for schedd, ad in found[:limit]:
         row = classads.finished_job(ad)
@@ -204,6 +209,8 @@ def job_history(
                 f"job_details shows it. Otherwise the ID may be wrong,{someone_else} or it is "
                 "old enough that the schedd has dropped it from its history."
             )
+    if failed:
+        out["warnings"] = list(failed.values())
     log.info("  -> %d finished jobs", len(rows))
     return out
 
