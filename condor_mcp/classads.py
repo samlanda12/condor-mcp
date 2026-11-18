@@ -320,6 +320,22 @@ def finished_job(ad: classad.ClassAd) -> dict[str, Any]:
     return {**row, **job_ending(ad)}
 
 
+def priority_row(ad: classad.ClassAd) -> dict[str, Any]:
+    """One user's record from the negotiator's accountant. Priority is the effective
+    priority, the real priority times the factor. Usage is weighted by SLOT_WEIGHT, which
+    is CPUs unless the pool sets otherwise; the unweighted counts are not reliable."""
+    priority = float(get(ad, "Priority", 0))
+    factor = float(get(ad, "PriorityFactor", 0))
+    return {
+        "user": get(ad, "Name"),
+        "effective_priority": round(priority, 2),
+        "real_priority": round(priority / factor, 3) if factor else None,
+        "priority_factor": factor,
+        "in_use": get(ad, "WeightedResourcesUsed", 0),
+        "usage_hours": round(float(get(ad, "WeightedAccumulatedUsage", 0)) / 3600, 2),
+    }
+
+
 def summarize_slot(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[str, Any]:
     """One row of the per-slot pool listing."""
     row = {

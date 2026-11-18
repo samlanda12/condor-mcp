@@ -401,6 +401,74 @@ def pool_status(
     return out
 
 
+def _is_user(submitter: str, name: str) -> bool:
+    """Whether a submitter or accountant name, such as alice@domain or, under an accounting
+    group, group_physics.alice@domain, is the user name."""
+    local = submitter.rsplit("@", 1)[0]
+    return local == name or local.endswith(f".{name}")
+
+
+@mcp.tool(annotations=READ_ONLY, tags={"pool", "read-only"})
+def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
+    """Report fair-share priority from the negotiator. When more jobs wait than slots
+    are free, the negotiator offers slots to users in order of effective priority,
+    lowest (best) first. A user's priority worsens with their recent usage, which decays
+    with a half-life (a day by default), times a per-user factor that admins set.
+
+    Each row has the effective priority, the real priority and factor it is the product
+    of, CPUs in use now and total usage hours (both weighted, by CPUs unless the pool
+    weights slots otherwise), the user's idle, running and held jobs, and their rank
+    among the users with idle or running jobs now (1 is offered slots first). A user
+    who submits under accounting groups has one row per group. 'all' lists the users
+    with jobs in a queue now. Job counts come from the schedds' submitter ads, which can
+    trail the queue by a few minutes. The negotiator's answer is reused for up to five
+    minutes; as_of says when it was read."""
+    log.info("user_priority owner=%s", owner)
+    _, name = pool.owner_constraint(owner)
+    ads, read_at = pool.accountant_ads()
+    records = {get(ad, "Name"): ad for ad in ads if not get(ad, "IsAccountingGroup", False)}
+    jobs: dict[str, Counter[str]] = {}
+    for ad in pool.query_submitters():
+        counts = jobs.setdefault(get(ad, "Name"), Counter())
+        for key, attr in (("idle", "IdleJobs"), ("running", "RunningJobs"), ("held", "HeldJobs")):
+            counts[key] += int(get(ad, attr, 0) or 0)
+
+    def priority(user: str) -> float | None:
+        return float(get(records[user], "Priority", 0)) if user in records else None
+
+    competing = {user for user, counts in jobs.items() if counts["idle"] or counts["running"]}
+    if name is None:
+        users = [user for user, counts in jobs.items() if sum(counts.values())]
+    else:
+        users = [user for user in {*records, *jobs} if _is_user(user, name)]
+    rows = []
+    for user in users:
+        row: dict[str, Any] = classads.priority_row(records[user]) if user in records else {"user": user}
+        mine = priority(user)
+        if mine is None:
+            row["note"] = "The negotiator has no usage record yet, so this user starts at the best priority."
+        else:
+            ahead = [u for u in competing if u != user and (p := priority(u)) is not None and p < mine]
+            row["rank"] = len(ahead) + 1
+        row["jobs"] = {key: jobs.get(user, Counter())[key] for key in ("idle", "running", "held")}
+        rows.append(row)
+    rows.sort(key=lambda row: (row.get("effective_priority") is None, row.get("effective_priority", 0)))
+
+    out: dict[str, Any] = {
+        "as_of": classads.ts(read_at),
+        "users_competing": len(competing),
+        "users": rows,
+    }
+    if not rows:
+        out["note"] = (
+            "No user has jobs in a queue." if name is None else
+            f"The negotiator has no record of {name} and they have no jobs in a queue. "
+            "A user's first jobs start at the best priority."
+        )
+    log.info("  -> %d rows, %d users competing", len(rows), len(competing))
+    return out
+
+
 @mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
 def draft_submit(
     executable: Annotated[str, Field(description="Program or script to run.")],

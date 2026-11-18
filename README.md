@@ -183,6 +183,7 @@ other job tools see only jobs still in it.
 | `job_history(owner="me", cluster_id=None, limit=20)` | Jobs that have left the queue, newest first: exit code for completed jobs, the reason for removed ones, plus wall time, memory and disk used vs requested, and the machine it ran on. Reads the schedd history, which drops the oldest jobs as it fills. |
 | `job_output(cluster_id, proc_id=0, which="stdout", tail_lines=50)` | The last lines of a job's stdout, stderr, or HTCondor event log (`which="log"`), read from the submit host, for queued and finished jobs. With file transfer, stdout and stderr arrive only when the job ends; until then it says so and points to the log. Only reads output of jobs the configured user owns. Returns at most 64 KB. |
 | `pool_status(detail=False)` | Machines, slots by state, CPUs / memory / GPUs total and available, GPUs by model, largest free CPU block. `detail=True` adds one row per slot. |
+| `user_priority(owner="me")` | Fair-share priority from the negotiator: effective priority (lower is served first), the real priority and factor behind it, CPUs in use and usage hours, the user's idle, running and held jobs, and their rank among users with jobs waiting or running. `owner="all"` lists every user with jobs in a queue. One row per accounting group the user submits under. The negotiator's answer is reused for up to five minutes. |
 | `draft_submit(executable, arguments="", input_files=None, cpus=1, memory_mb=1024, gpus=0, queue=1, extra=None, ...)` | A submit file built from the fields, checked with `condor_submit -dry-run` and against the pool's slots, with warnings for a missing executable or input, a typo in `extra`, or a request no slot can fit. Queues nothing. |
 | `submit_job(submit_text=None, submit_file=None, dry_run=False)` | Queues the jobs in a submit description, given as text (a draft the user approved) or as the path of a submit file on the submit host. Runs `condor_submit -dry-run` first and refuses on any error. `dry_run=True` returns the job ads instead of queuing. Submits to the first schedd in `CONDOR_MCP_SCHEDDS`. Returns the cluster id, job count, and one `list_jobs` row per job. |
 | `hold_job(cluster_id, reason, proc_id=None)` | Puts a job on hold, or every job in the cluster if `proc_id` is omitted. A running job is stopped; it stays in the queue until released. The reason is recorded on the job. Returns each job's status before and after. |
@@ -192,7 +193,7 @@ other job tools see only jobs still in it.
 ### Read-only and write tools
 
 `job_details`, `list_jobs`, `hold_reasons`, `job_history`, `job_output`, `pool_status`,
-and `draft_submit` are read-only: `draft_submit` writes nothing and contacts no schedd. The rest change the queue
+`user_priority`, and `draft_submit` are read-only: `draft_submit` writes nothing and contacts no schedd. The rest change the queue
 and are marked non-read-only in their MCP annotations so clients can ask the user before
 calling them.
 
@@ -227,7 +228,7 @@ read once at startup, and an empty value is the same as unset.
 | `CONDOR_MCP_SLOT_ATTRS` | none | Extra slot attributes to return from `pool_status(detail=True)`, comma-separated. |
 | `CONDOR_MCP_CALL_LOG` | off | File to log each tool call to. Handy during a demo. |
 | `CONDOR_MCP_WORKDIR` | `~/condor-mcp-jobs` | Where drafted jobs run from (their `initialdir`) and where their log, stdout and stderr land, named after the job id. Relative paths in a draft are taken relative to it. Created at startup if missing. |
-| `CONDOR_MCP_TIMEOUT` | `60` | Seconds to wait for each call to a schedd or the collector, at most 3600. The read tools ask every schedd at once and leave out one that fails or does not answer, with a warning; they give up with an error only when none answers. A submit, hold, release or remove that times out may still have taken effect, and the error says so. |
+| `CONDOR_MCP_TIMEOUT` | `60` | Seconds to wait for each call to a schedd, the collector, or the negotiator, at most 3600. The read tools ask every schedd at once and leave out one that fails or does not answer, with a warning; they give up with an error only when none answers. A submit, hold, release or remove that times out may still have taken effect, and the error says so. |
 
 GPU attributes are always fetched. On a pool without GPUs they come back empty, which is
 expected.

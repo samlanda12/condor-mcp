@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import getpass
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterator, NamedTuple, TypeVar
@@ -52,7 +54,7 @@ class Settings(BaseSettings):
     # Where drafted jobs run from (their initialdir) and where their log,
     # stdout and stderr land.
     workdir: Path = Field(default_factory=lambda: Path.home() / "condor-mcp-jobs")
-    # Seconds to wait for a schedd or the collector before giving up on a call. Capped.
+    # Seconds to wait for a schedd, the collector or the negotiator before giving up on a call. Capped.
     timeout: float = Field(default=60, gt=0, le=3600)
 
     @field_validator("schedds", "job_attrs", "slot_attrs", mode="before")
@@ -304,6 +306,58 @@ def query_slots(projection: list[str], constraint: str | None = None) -> list[cl
             f"Could not reach the collector ({settings.collector or 'from HTCondor config'}): "
             f"{exc}. Is the pool up? Check with `condor_status`, and CONDOR_MCP_COLLECTOR if set."
         ) from exc
+
+
+def query_submitters() -> list[classad.ClassAd]:
+    """Submitter ads from the collector: one per user and schedd with jobs in that queue
+    now, with the user's idle, running and held counts there."""
+    try:
+        return call(
+            worker.collector_query, settings.collector, htcondor.AdType.Submitter, "True",
+            ["Name", "IdleJobs", "RunningJobs", "HeldJobs"],
+        )
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not reach the collector ({settings.collector or 'from HTCondor config'}): "
+            f"{exc}. Is the pool up? Check with `condor_status`, and CONDOR_MCP_COLLECTOR if set."
+        ) from exc
+
+
+def locate_negotiator() -> classad.ClassAd | None:
+    """The configured collector's negotiator, or None for the local config's."""
+    if not settings.collector:
+        return None
+    try:
+        return call(worker.collector_locate, settings.collector, htcondor.DaemonType.Negotiator, None)
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not find the negotiator through the collector ({settings.collector}): {exc}. "
+            "Check CONDOR_MCP_COLLECTOR."
+        ) from exc
+
+
+# The negotiator updates priorities once per negotiation cycle and answers no queries while
+# it negotiates, which on a busy pool can take minutes, so its answer is kept this long.
+PRIORITY_MAX_AGE = 300
+_priorities: tuple[float, list[classad.ClassAd]] | None = None
+_priorities_lock = threading.Lock()
+
+
+def accountant_ads() -> tuple[list[classad.ClassAd], float]:
+    """The negotiator's accounting ads and the time.time() they were read, at most
+    PRIORITY_MAX_AGE seconds ago. Callers wait on one read rather than each making one."""
+    global _priorities
+    with _priorities_lock:
+        if _priorities is None or time.time() - _priorities[0] > PRIORITY_MAX_AGE:
+            try:
+                ads = call(worker.negotiator_priorities, locate_negotiator())
+            except CONDOR_ERRORS as exc:
+                raise ToolError(
+                    f"Could not get user priorities from the negotiator: {exc}. Is it up? "
+                    "Check with `condor_userprio`, and CONDOR_MCP_COLLECTOR if set."
+                ) from exc
+            _priorities = (time.time(), ads)
+        return _priorities[1], _priorities[0]
 
 
 def owner_constraint(owner: str) -> tuple[str, str | None]:
