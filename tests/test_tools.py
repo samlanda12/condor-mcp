@@ -145,6 +145,48 @@ async def test_pool_status(live_jobs):
     assert "slot_list" not in out
 
 
+async def test_pool_status_schedd_health(live_jobs):
+    out = await call("pool_status")
+    [schedd] = out["schedds"]  # the local one
+    assert 0 <= schedd["duty_cycle"] and schedd["load"] in {"ok", "busy", "strained", "overloaded"}
+    assert schedd["jobs"]["running"] >= 1 and schedd["jobs"]["held"] >= 1
+    assert schedd["jobs"]["running"] <= schedd["max_running"]
+
+
+@pytest.mark.parametrize("duty, load", [(0.0, "ok"), (0.49, "ok"), (0.5, "busy"), (0.8, "strained"), (0.95, "overloaded")])
+def test_schedd_load_names(duty, load):
+    import classad2 as classad
+
+    from condor_mcp import classads
+
+    ad = classad.ClassAd({"RecentDaemonCoreDutyCycle": duty, "TotalRunningJobs": 5, "MaxJobsRunning": 10})
+    row = classads.schedd_health("s", ad)
+    assert row["load"] == load and "note" not in row
+
+
+def test_schedd_at_its_running_cap():
+    import classad2 as classad
+
+    from condor_mcp import classads
+
+    row = classads.schedd_health("s", classad.ClassAd({"TotalRunningJobs": 10, "MaxJobsRunning": 10}))
+    assert "MaxJobsRunning cap" in row["note"] and "load" not in row
+    assert "may be down" in classads.schedd_health("gone", None)["note"]
+
+
+async def test_pool_status_without_schedd_ads(monkeypatch):
+    """A failed schedd lookup leaves the slot numbers and says why the schedds are missing."""
+    from condor_mcp import pool
+
+    def fail():
+        raise ToolError("Could not read the schedd ads")
+
+    monkeypatch.setattr(pool, "schedd_ads", fail)
+    out = await call("pool_status")
+    assert out["slots"]["total"] >= 1 and "schedds" not in out
+    assert out["warnings"] == ["Could not read the schedd ads"]
+
+
 async def test_pool_status_detail(live_jobs):
     out = await call("pool_status", detail=True)
     slots = out["slot_list"]

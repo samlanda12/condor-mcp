@@ -336,6 +336,10 @@ def pool_status(
     """Report the pool's capacity from the collector: machines, slots by state,
     CPUs, memory and GPUs in total and currently available, GPUs by model where
     the pool reports one, and the largest block of free CPUs on any one machine.
+    Also the health of each schedd the server uses: its recent duty cycle with a load
+    name (ok below 0.50, busy, strained from 0.80, overloaded from 0.95, when it is slow
+    to start jobs and answer queries), its running, idle and held jobs, and its
+    MaxJobsRunning cap, past which none of its jobs start.
     Use this for "is the cluster busy", "are there free GPUs", or "why is my job
     still idle". Slot counts include dynamic slots, so a machine with a
     partitionable slot shows one unclaimed slot holding its spare resources plus
@@ -395,6 +399,10 @@ def pool_status(
         "gpus": {**gpus, "by_model": gpu_models},
         "largest_free_cpu_block": largest,
     }
+    try:
+        out["schedds"] = [classads.schedd_health(name, ad) for name, ad in pool.schedd_ads().items()]
+    except ToolError as exc:  # the slots are still worth returning
+        out["warnings"] = [str(exc)]
     if detail:
         out["slot_list"] = [classads.summarize_slot(ad, settings.slot_attrs) for ad in ads]
     log.info("  -> %d slots, %d/%d cpus free", len(ads), cpus["available"], cpus["total"])

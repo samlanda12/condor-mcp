@@ -308,6 +308,29 @@ def query_slots(projection: list[str], constraint: str | None = None) -> list[cl
         ) from exc
 
 
+SCHEDD_PROJECTION = [
+    "Name", "RecentDaemonCoreDutyCycle", "MaxJobsRunning", "TotalRunningJobs", "TotalIdleJobs", "TotalHeldJobs",
+]
+
+
+def schedd_ads() -> dict[str, classad.ClassAd | None]:
+    """Each configured schedd's ad from the collector, or the local schedd's, by name.
+    A configured schedd the collector has no ad for maps to None."""
+    try:
+        if not settings.schedds:
+            ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Schedd, None)
+            return {get(ad, "Name", "local"): ad} if ad is not None else {"local": None}
+        names = " || ".join(f"Name == {classad.quote(name)}" for name in settings.schedds)
+        ads = call(worker.collector_query, settings.collector, htcondor.AdType.Schedd, names, SCHEDD_PROJECTION)
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not read the schedd ads from the collector "
+            f"({settings.collector or 'from HTCondor config'}): {exc}."
+        ) from exc
+    found = {get(ad, "Name"): ad for ad in ads}
+    return {name: found.get(name) for name in settings.schedds}
+
+
 def query_submitters() -> list[classad.ClassAd]:
     """Submitter ads from the collector: one per user and schedd with jobs in that queue
     now, with the user's idle, running and held counts there."""
