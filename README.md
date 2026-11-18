@@ -227,6 +227,7 @@ read once at startup, and an empty value is the same as unset.
 | `CONDOR_MCP_SLOT_ATTRS` | none | Extra slot attributes to return from `pool_status(detail=True)`, comma-separated. |
 | `CONDOR_MCP_CALL_LOG` | off | File to log each tool call to. Handy during a demo. |
 | `CONDOR_MCP_WORKDIR` | `~/condor-mcp-jobs` | Where drafted jobs run from (their `initialdir`) and where their log, stdout and stderr land, named after the job id. Relative paths in a draft are taken relative to it. Created at startup if missing. |
+| `CONDOR_MCP_TIMEOUT` | `60` | Seconds to wait for each call to a schedd or the collector, at most 3600. The read tools ask every schedd at once and leave out one that fails or does not answer, with a warning; they give up with an error only when none answers. A submit, hold, release or remove that times out may still have taken effect, and the error says so. |
 
 GPU attributes are always fetched. On a pool without GPUs they come back empty, which is
 expected.
@@ -236,10 +237,6 @@ expected.
 The tests submit real jobs to a live pool, so they need permission to submit. They tag
 their jobs `CondorMcpTest`, remove only those when they finish, and keep their files in a
 temp directory. Don't run them against a production schedd you don't own.
-
-They also expect a small development pool with one execute machine and no GPUs, like the
-container below. On a bigger pool the `pool_status` tests fail even though the server
-works.
 
 ```sh
 uv run pytest
@@ -253,5 +250,7 @@ you use, run the server and the tests inside it as a user allowed to submit.
 
 Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
 holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows
-where the pool is and wraps connection errors, [submit.py](condor_mcp/submit.py) builds
-and checks submit files, [server.py](condor_mcp/server.py) defines the tools.
+where the pool is and wraps connection errors, [worker.py](condor_mcp/worker.py) makes
+every call to a schedd or the collector in a child process so a daemon that never answers
+cannot hang the server, [submit.py](condor_mcp/submit.py) builds and checks submit files,
+[server.py](condor_mcp/server.py) defines the tools.

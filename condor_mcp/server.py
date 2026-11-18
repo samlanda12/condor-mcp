@@ -17,9 +17,10 @@ import classad2 as classad
 import htcondor2 as htcondor
 from htcondor2 import JobStatus
 
-from condor_mcp import classads, pool, submit
+from condor_mcp import classads, pool, submit, worker
 from condor_mcp.classads import get
-from condor_mcp.pool import log, settings
+from condor_mcp.pool import CONDOR_ERRORS, log, settings
+from condor_mcp.worker import NoAnswer
 
 mcp = FastMCP("condor-mcp")
 
@@ -40,7 +41,7 @@ def _job_projection(base: list[str]) -> list[str]:
     return base + [a for a in settings.job_attrs if a not in base]
 
 
-def _find_job(cluster_id: int, proc_id: int, projection: list[str]) -> tuple[str, classad.ClassAd, bool]:
+def _find_job(cluster_id: int, proc_id: int, projection: list[str]) -> pool.FoundJob:
     """pool.find_job, with a job in neither the queue nor the history as a ToolError."""
     found = pool.find_job(cluster_id, proc_id, projection)
     if found is None:
@@ -73,9 +74,11 @@ def job_details(
     it has ended. Use this when a user asks about a specific job by ID. A job that
     has left the queue is read from the schedd history, and in_queue is false."""
     log.info("job_details cluster_id=%s proc_id=%s", cluster_id, proc_id)
-    schedd, ad, in_queue = _find_job(cluster_id, proc_id, _job_projection(classads.JOB_PROJECTION))
+    schedd, ad, in_queue, warnings = _find_job(cluster_id, proc_id, _job_projection(classads.JOB_PROJECTION))
     summary = classads.summarize_job(ad, settings.job_attrs)
     summary["in_queue"] = in_queue
+    if warnings:
+        summary["warnings"] = warnings
     pool.tag_schedd(summary, schedd)
     log.info("  -> job %s is %s, in_queue=%s", summary["job_id"], summary["status"], in_queue)
     return summary
@@ -96,12 +99,13 @@ def list_jobs(
     still in the queue are listed; job_history lists jobs that have left it."""
     log.info("list_jobs owner=%s status=%s limit=%s", owner, status, limit)
     constraint, name = pool.owner_constraint(owner)
-    counts = Counter(
-        classads.status_name(ad) for _, ad in pool.query_jobs(constraint, ["JobStatus"])
-    )
+    counted, failed = pool.query_jobs(constraint, ["JobStatus"])
+    counts = Counter(classads.status_name(ad) for _, ad in counted)
     if status:
         constraint += f" && JobStatus == {classads.STATUS_CODE[status]}"
-    found = pool.query_jobs(constraint, _job_projection(classads.JOB_LIST_PROJECTION), limit=limit)
+    found, failed = pool.query_jobs(
+        constraint, _job_projection(classads.JOB_LIST_PROJECTION), limit=limit, failed=failed
+    )
     found.sort(key=lambda pair: (get(pair[1], "ClusterId", 0), get(pair[1], "ProcId", 0)))
     rows = []
     for schedd, ad in found[:limit]:
@@ -110,7 +114,7 @@ def list_jobs(
             row["site"] = classads.site_attrs(ad, settings.job_attrs)
         rows.append(pool.tag_schedd(row, schedd))
     matching = counts[status] if status else sum(counts.values())
-    out = {
+    out: dict[str, Any] = {
         "owner": name or "all",
         "status_filter": status,
         "counts_by_status": dict(counts),
@@ -124,6 +128,8 @@ def list_jobs(
             f"No {what} in the queue {who}. Jobs that finished have left the queue; "
             "job_history lists them."
         )
+    if failed:
+        out["warnings"] = list(failed.values())
     log.info("  -> %d of %d jobs", len(rows), matching)
     return out
 
@@ -136,7 +142,7 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     jobs". A job that is not held will not appear; check it with job_details."""
     log.info("hold_reasons owner=%s", owner)
     constraint, name = pool.owner_constraint(owner)
-    found = pool.query_jobs(
+    found, failed = pool.query_jobs(
         f"({constraint}) && JobStatus == {int(JobStatus.HELD)}",
         _job_projection(classads.HELD_PROJECTION),
     )
@@ -159,6 +165,8 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     }
     if not rows:
         out["note"] = f"No held jobs for {name or 'anyone'}."
+    if failed:
+        out["warnings"] = list(failed.values())
     log.info("  -> %d held", len(rows))
     return out
 
@@ -182,7 +190,7 @@ def job_history(
     if cluster_id is not None:
         constraint = f"({constraint}) && ClusterId == {cluster_id}"
     # One extra per schedd, so a list cut at the limit can say so
-    found = pool.query_history(constraint, _job_projection(classads.HISTORY_PROJECTION), limit + 1)
+    found, failed = pool.query_history(constraint, _job_projection(classads.HISTORY_PROJECTION), limit + 1)
     rows = []
     for schedd, ad in found[:limit]:
         row = classads.finished_job(ad)
@@ -201,6 +209,8 @@ def job_history(
                 f"job_details shows it. Otherwise the ID may be wrong,{someone_else} or it is "
                 "old enough that the schedd has dropped it from its history."
             )
+    if failed:
+        out["warnings"] = list(failed.values())
     log.info("  -> %d finished jobs", len(rows))
     return out
 
@@ -267,7 +277,7 @@ def job_output(
     running job's stdout and stderr reach the submit host only when it ends;
     until then the log shows its progress."""
     log.info("job_output cluster_id=%s proc_id=%s which=%s tail_lines=%s", cluster_id, proc_id, which, tail_lines)
-    schedd, ad, in_queue = _find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
+    schedd, ad, in_queue, warnings = _find_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
 
     if get(ad, "Owner") != settings.user:
         raise ToolError(
@@ -280,6 +290,8 @@ def job_output(
         "job_id": classads.job_id(ad), "status": classads.status_name(ad), "in_queue": in_queue, "which": which,
     }
     pool.tag_schedd(out, schedd)
+    if warnings:
+        out["warnings"] = warnings
     name = get(ad, attr)
     if not name or name == "/dev/null":
         out["note"] = (
@@ -366,7 +378,7 @@ def pool_status(
         gpus["total"] += total_g
         gpus["available"] += free_g
         if total_g:
-            model = get(ad, "CUDADeviceName") or "unknown model"
+            model = classads.gpu_model(ad) or "unknown model"
             entry = gpu_models.setdefault(model, {"total": 0, "available": 0})
             entry["total"] += total_g
             entry["available"] += free_g
@@ -511,13 +523,21 @@ def submit_job(
 
     name, schedd = next(pool.schedds())
     try:
-        result = schedd.submit(description)
-    except (htcondor.HTCondorException, RuntimeError) as exc:
+        # As text plus what prepare() pinned: a Submit object cannot be sent to the process
+        # that makes the call, and str(description) loses an inline queue item list
+        pinned = {key: description[key] for key in ("initialdir", "executable") if key in description}
+        result = pool.call(worker.schedd_submit, schedd, text, pinned)
+    except NoAnswer as exc:
+        raise ToolError(
+            f"The schedd ({name}) did not answer the submit: {exc}. The jobs may or may not "
+            "have been queued; check with list_jobs before submitting again."
+        ) from exc
+    except (htcondor.HTCondorException, RuntimeError, ValueError) as exc:
         raise ToolError(f"The schedd ({name}) refused the submit: {exc}") from exc
     cluster = result.cluster()
     try:
-        queued = schedd.query(f"ClusterId == {cluster}", projection=classads.JOB_LIST_PROJECTION)
-    except htcondor.HTCondorException as exc:
+        queued = pool.call(worker.schedd_query, schedd, f"ClusterId == {cluster}", classads.JOB_LIST_PROJECTION, -1)
+    except CONDOR_ERRORS as exc:
         raise ToolError(f"Submitted cluster {cluster} but could not read it back: {exc}") from exc
     queued.sort(key=lambda ad: get(ad, "ProcId", 0))
     out: dict[str, Any] = {
@@ -605,7 +625,12 @@ def _act(
     try:
         # htcondor2 drops a plain-string reason on the floor; only the (text, code) tuple reaches
         # the schedd. A None code keeps HoldReasonCode at 1, the same as condor_hold.
-        result = schedd.act(action, f"{constraint} && {mine}", reason=(reason, None))
+        result = pool.call(worker.schedd_act, schedd, action, f"{constraint} && {mine}", (reason, None))
+    except NoAnswer as exc:
+        raise ToolError(
+            f"The schedd ({name}) did not answer the request to {verb} {label}: {exc}. It may or may "
+            "not have taken effect; check with job_details before trying again."
+        ) from exc
     except (htcondor.HTCondorException, RuntimeError) as exc:
         raise ToolError(f"The schedd ({name}) could not {verb} {label}: {exc}") from exc
     if result is None:  # htcondor2 returns None instead of raising when the schedd sends no result
