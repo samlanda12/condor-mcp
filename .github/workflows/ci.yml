@@ -73,8 +73,9 @@ jobs:
 
             # Annotates the PR diff with each finding
             - name: run ruff check
+              id: check
               run: uv run --locked --only-dev ruff check --output-format github
 
             - name: run ruff format
-              if: ${{ !cancelled() }}
+              if: ${{ !cancelled() && steps.check.outcome != 'skipped' }}
               run: uv run --locked --only-dev ruff format --check
