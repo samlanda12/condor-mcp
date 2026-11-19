@@ -163,7 +163,10 @@ def runs_commands(text: str) -> str | None:
     except (ValueError, htcondor.HTCondorException):
         return None  # parse() reports the error
     if "|" in args or "$" in args:  # macros expand after this check
-        return f"'queue {args}': queue statements with a | or a macro are not accepted, since they can run a command at submit time."
+        return (
+            f"'queue {args}': queue statements with a | or a macro are not accepted, "
+            "since they can run a command at submit time."
+        )
     return None
 
 

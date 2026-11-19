@@ -280,7 +280,10 @@ async def test_submit_refuses_missing_initialdir():
         "executable = /bin/sleep\nCMD = touch /tmp/condor-mcp-should-not-exist |\nqueue item from $(CMD)\n",
         "executable = /bin/sleep\nincl\\\nude : touch /tmp/condor-mcp-should-not-exist |\nqueue 1\n",
         "executable = /bin/sleep\nincl\\   \nude : touch /tmp/condor-mcp-should-not-exist |\nqueue 1\n",
-        "executable = /bin/sleep\nqueue item from (\n    )\n    queue item from touch /tmp/condor-mcp-should-not-exist |\n)\n",
+        (
+            "executable = /bin/sleep\nqueue item from (\n    )\n"
+            "    queue item from touch /tmp/condor-mcp-should-not-exist |\n)\n"
+        ),
     ],
 )
 async def test_submit_refuses_command_statements(text):

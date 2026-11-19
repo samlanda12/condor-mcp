@@ -409,7 +409,8 @@ def draft_submit(
     output_files: Annotated[
         list[str] | None,
         Field(
-            description="Files or directories to copy back when the job ends. Empty means every new file in the job's scratch directory."
+            description="Files or directories to copy back when the job ends. "
+            "Empty means every new file in the job's scratch directory."
         ),
     ] = None,
     cpus: Annotated[int, Field(ge=1)] = 1,
@@ -422,7 +423,9 @@ def draft_submit(
     extra: Annotated[
         dict[str, str] | None,
         Field(
-            description='Other submit commands, verbatim, such as {"requirements": "HasAVX2", "+WantCloudBurst": "\\"orangegrid-2026\\""}. They come last and override the generated commands.'
+            description="Other submit commands, verbatim, such as "
+            '{"requirements": "HasAVX2", "+WantCloudBurst": "\\"orangegrid-2026\\""}. '
+            "They come last and override the generated commands."
         ),
     ] = None,
 ) -> dict[str, Any]:
@@ -506,13 +509,15 @@ def submit_job(
     submit_text: Annotated[
         str | None,
         Field(
-            description="A complete submit description, such as the submit_text from draft_submit once the user has approved it."
+            description="A complete submit description, such as the submit_text from draft_submit "
+            "once the user has approved it."
         ),
     ] = None,
     submit_file: Annotated[
         str | None,
         Field(
-            description="Instead of text: the path of a submit file on the submit host. Its relative paths are taken relative to its own directory."
+            description="Instead of text: the path of a submit file on the submit host. "
+            "Its relative paths are taken relative to its own directory."
         ),
     ] = None,
     dry_run: Annotated[bool, Field(description="Queue nothing; return the job ads HTCondor would create.")] = False,
