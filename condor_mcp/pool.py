@@ -11,9 +11,10 @@ import getpass
 import logging
 import threading
 import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Annotated, Any, Callable, Iterator, NamedTuple, TypeVar
+from typing import Annotated, Any, NamedTuple
 
 import classad2 as classad
 import htcondor2 as htcondor
@@ -24,8 +25,6 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from condor_mcp import worker
 from condor_mcp.classads import get
 from condor_mcp.worker import NoAnswer
-
-T = TypeVar("T")
 
 log = logging.getLogger("condor_mcp")
 
@@ -91,7 +90,7 @@ except OSError as _exc:
 CONDOR_ERRORS = (htcondor.HTCondorException, NoAnswer)
 
 
-def call(fn: Callable[..., T], *args: Any) -> T:
+def call[T](fn: Callable[..., T], *args: Any) -> T:
     """Run one of the calls in condor_mcp.worker with the configured deadline."""
     try:
         return worker.run(settings.timeout, fn, *args)
@@ -114,13 +113,11 @@ def locate(name: str) -> htcondor.Schedd:
         ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Schedd, name)
     except CONDOR_ERRORS as exc:
         raise ToolError(
-            f"Could not reach the collector to find schedd {name!r}: {exc}. "
-            "Check CONDOR_MCP_COLLECTOR."
+            f"Could not reach the collector to find schedd {name!r}: {exc}. Check CONDOR_MCP_COLLECTOR."
         ) from exc
     if ad is None:  # locate() returns None rather than raising for an unknown name
         raise ToolError(
-            f"The collector knows no schedd named {name!r}. Check CONDOR_MCP_SCHEDDS "
-            "against `condor_status -schedd`."
+            f"The collector knows no schedd named {name!r}. Check CONDOR_MCP_SCHEDDS against `condor_status -schedd`."
         )
     return htcondor.Schedd(ad)
 
@@ -227,9 +224,7 @@ def query_history(
     Returns (schedd name, ad) pairs, most recently finished first, and the schedds that
     could not be read, as query_jobs does. The limit applies per schedd, so the merged
     list can be longer; callers trim it."""
-    found, failed = ask_schedds(
-        lambda name: query_schedd_history(name, locate(name), constraint, projection, limit)
-    )
+    found, failed = ask_schedds(lambda name: query_schedd_history(name, locate(name), constraint, projection, limit))
     # Each schedd answers newest first; the sort interleaves several schedds the same way
     found.sort(key=lambda pair: get(pair[1], "EnteredCurrentStatus", 0), reverse=True)
     return found, failed

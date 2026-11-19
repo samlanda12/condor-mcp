@@ -65,9 +65,17 @@ def test_job_details_no_ran_on_for_a_job_that_never_started():
 
     from condor_mcp.classads import summarize_job
 
-    ad = classad.ClassAd({"ClusterId": 7, "ProcId": 0, "JobStatus": 3, "NumJobStarts": 0,
-                          "LastRemoteHost": "slot1@host", "RemoveReason": "via condor_rm",
-                          "LastHoldReason": "Transfer input files failure"})
+    ad = classad.ClassAd(
+        {
+            "ClusterId": 7,
+            "ProcId": 0,
+            "JobStatus": 3,
+            "NumJobStarts": 0,
+            "LastRemoteHost": "slot1@host",
+            "RemoveReason": "via condor_rm",
+            "LastHoldReason": "Transfer input files failure",
+        }
+    )
     job = summarize_job(ad)
     assert "ran_on" not in job and job["last_hold_reason"] == "Transfer input files failure"
 
@@ -204,20 +212,43 @@ async def test_pool_status_gpu_models(monkeypatch):
 
     from condor_mcp import pool
 
-    a100 = {"Name": "slot1@gpu1", "Machine": "gpu1", "State": "Unclaimed", "PartitionableSlot": True,
-            "Cpus": 8, "Memory": 4096, "GPUs": 1, "TotalSlotCpus": 32, "TotalSlotMemory": 65536,
-            "TotalSlotGPUs": 4, "GPUs_DeviceName": "NVIDIA A100"}
-    old = {"Name": "slot1@gpu2", "Machine": "gpu2", "State": "Unclaimed", "PartitionableSlot": True,
-           "Cpus": 4, "Memory": 8192, "GPUs": 2, "TotalSlotCpus": 4, "TotalSlotMemory": 8192,
-           "TotalSlotGPUs": 2, "CUDADeviceName": "Tesla K80"}
+    a100 = {
+        "Name": "slot1@gpu1",
+        "Machine": "gpu1",
+        "State": "Unclaimed",
+        "PartitionableSlot": True,
+        "Cpus": 8,
+        "Memory": 4096,
+        "GPUs": 1,
+        "TotalSlotCpus": 32,
+        "TotalSlotMemory": 65536,
+        "TotalSlotGPUs": 4,
+        "GPUs_DeviceName": "NVIDIA A100",
+    }
+    old = {
+        "Name": "slot1@gpu2",
+        "Machine": "gpu2",
+        "State": "Unclaimed",
+        "PartitionableSlot": True,
+        "Cpus": 4,
+        "Memory": 8192,
+        "GPUs": 2,
+        "TotalSlotCpus": 4,
+        "TotalSlotMemory": 8192,
+        "TotalSlotGPUs": 2,
+        "CUDADeviceName": "Tesla K80",
+    }
 
     def fake_query_slots(projection, constraint=None):
         return [classad.ClassAd({k: v for k, v in ad.items() if k in projection}) for ad in (a100, old)]
 
     monkeypatch.setattr(pool, "query_slots", fake_query_slots)
     out = await call("pool_status", detail=True)
-    assert out["gpus"] == {"total": 6, "available": 3, "by_model": {
-        "NVIDIA A100": {"total": 4, "available": 1}, "Tesla K80": {"total": 2, "available": 2}}}
+    assert out["gpus"] == {
+        "total": 6,
+        "available": 3,
+        "by_model": {"NVIDIA A100": {"total": 4, "available": 1}, "Tesla K80": {"total": 2, "available": 2}},
+    }
     assert [s["gpu_model"] for s in out["slot_list"]] == ["NVIDIA A100", "Tesla K80"]
 
 
@@ -226,10 +257,19 @@ async def test_job_details_requested_gpus():
     import htcondor2 as htcondor
 
     schedd = htcondor.Schedd()
-    cluster = schedd.submit(htcondor.Submit({
-        "executable": "/bin/sleep", "arguments": "60", "request_gpus": "2", "hold": "true",
-        "request_memory": "64MB", "request_disk": "10MB", "+CondorMcpTest": "true",
-    })).cluster()
+    cluster = schedd.submit(
+        htcondor.Submit(
+            {
+                "executable": "/bin/sleep",
+                "arguments": "60",
+                "request_gpus": "2",
+                "hold": "true",
+                "request_memory": "64MB",
+                "request_disk": "10MB",
+                "+CondorMcpTest": "true",
+            }
+        )
+    ).cluster()
     try:
         job = await call("job_details", cluster_id=cluster, proc_id=0)
         assert job["requested"]["gpus"] == 2

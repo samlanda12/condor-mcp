@@ -17,7 +17,7 @@ from fastmcp.exceptions import ToolError
 from conftest import call
 
 pytestmark = pytest.mark.anyio
-TIMEOUT = 2
+TIMEOUT = 1
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def test_hung_call_does_not_hold_up_another():
 
     def hang() -> None:
         try:
-            worker.run(3, time.sleep, 30)
+            worker.run(1.5, time.sleep, 30)
         except worker.NoAnswer as exc:
             errors.append(exc)
 
@@ -105,8 +105,8 @@ def test_child_ends_itself_after_its_deadline():
 
     proc, conn = worker._start()
     try:
-        conn.send((1, time.sleep, (30,)))
-        assert proc.wait(1 + worker.CHILD_GRACE + 5) == -signal.SIGALRM
+        conn.send((0.1, time.sleep, (30,)))
+        assert proc.wait(0.1 + worker.CHILD_GRACE + 5) == -signal.SIGALRM
     finally:
         worker._stop((proc, conn))
 

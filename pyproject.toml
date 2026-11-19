@@ -13,7 +13,14 @@ dependencies = [
 condor-mcp = "condor_mcp.server:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "anyio>=4", "mypy>=1.14"]
+dev = ["pytest>=8", "anyio>=4", "mypy>=1.14", "ruff>=0.17,<0.18"]
+
+[tool.ruff]
+line-length = 120
+src = [".", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

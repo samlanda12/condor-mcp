@@ -264,7 +264,7 @@ def test_tail_cut_at_a_line_start(tmp_path, tail, first):
 
     f = tmp_path / "fixed.out"
     f.write_text("".join(f"{i:015d}\n" for i in range(5000)) + tail)
-    text, size, truncated = _tail(f, 5000)
+    text, _size, truncated = _tail(f, 5000)
     lines = text.splitlines()
     assert lines[0] == f"{first:015d}" and truncated
     assert sum(len(line) + 1 for line in lines) <= MAX_OUTPUT_BYTES
