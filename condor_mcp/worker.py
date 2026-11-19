@@ -21,13 +21,12 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from multiprocessing.connection import Connection
-from typing import Any, Callable, TypeVar
+from typing import Any
 
 import classad2 as classad
 import htcondor2 as htcondor
-
-T = TypeVar("T")
 
 # How long after its deadline a child in a call kills itself, if the server has not
 CHILD_GRACE = 5
@@ -63,12 +62,12 @@ def _serve(conn: Connection) -> None:
             reply: tuple[str, Any] = ("ok", fn(*args))
         except htcondor.HTCondorException as exc:
             reply = ("htcondor", str(exc))
-        except Exception as exc:
+        except Exception as exc:  # any other error goes back to the server  # noqa: BLE001
             reply = ("error", exc)
         signal.setitimer(signal.ITIMER_REAL, 0)
         try:
             conn.send(reply)
-        except Exception as exc:  # a result or exception that does not pickle
+        except Exception as exc:  # a result or exception that does not pickle  # noqa: BLE001
             conn.send(("error", RuntimeError(f"{type(exc).__name__}: {exc}")))
 
 
@@ -82,7 +81,10 @@ def _start() -> Child:
     try:
         proc = subprocess.Popen(
             [sys.executable, "-m", "condor_mcp.worker", str(theirs.fileno())],
-            pass_fds=[theirs.fileno()], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, env=env,
+            pass_fds=[theirs.fileno()],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            env=env,
         )
     except OSError as exc:  # out of processes, memory or file descriptors
         ours.close()
@@ -120,7 +122,7 @@ def _give_back(child: Child) -> None:
     _stop(child)
 
 
-def run(timeout: float, fn: Callable[..., T], *args: Any) -> T:
+def run[T](timeout: float, fn: Callable[..., T], *args: Any) -> T:
     """fn(*args) in a child, raising NoAnswer after timeout seconds. fn must be importable
     by name, like the functions below."""
     child = _take()
@@ -132,9 +134,7 @@ def run(timeout: float, fn: Callable[..., T], *args: Any) -> T:
         status, value = conn.recv()
     except (EOFError, OSError):  # the child died
         _stop(child)
-        raise NoAnswer(
-            f"the process making the call exited before it answered (status {proc.returncode})"
-        ) from None
+        raise NoAnswer(f"the process making the call exited before it answered (status {proc.returncode})") from None
     except BaseException:  # a timeout, or an argument that does not pickle
         _stop(child)
         raise
