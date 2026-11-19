@@ -432,6 +432,7 @@ def _priority_table() -> _PriorityTable:
 
 def _priority_row(user: str, table: _PriorityTable) -> dict[str, Any]:
     """One user_priority row, with the user's rank among the competing submitters."""
+
     def priority(name: str) -> float | None:
         return float(get(table.records[name], "Priority", 0)) if name in table.records else None
 
@@ -479,8 +480,9 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     }
     if not rows:
         out["note"] = (
-            "No user has jobs in a queue." if name is None else
-            f"The negotiator has no record of {name} and they have no jobs in a queue. "
+            "No user has jobs in a queue."
+            if name is None
+            else f"The negotiator has no record of {name} and they have no jobs in a queue. "
             "A user's first jobs start at the best priority."
         )
     if table.warning:
@@ -504,8 +506,11 @@ def _not_idle(job: classad.ClassAd, in_queue: bool) -> dict[str, Any]:
     if not in_queue:
         return {"note": f"The job has left the queue ({status}). job_details shows how it ended."}
     if status == "held":
-        return {"note": "The job is held, not idle, so it will not run until it is released. Fix the "
-                "hold's cause first, or it goes straight back on hold.", "hold": classads.hold_info(job)}
+        return {
+            "note": "The job is held, not idle, so it will not run until it is released. Fix the "
+            "hold's cause first, or it goes straight back on hold.",
+            "hold": classads.hold_info(job),
+        }
     if status == "running":
         return {"note": f"The job is running, on {get(job, 'RemoteHost')}."}
     return {"note": f"The job is {status}, not idle."}
@@ -529,7 +534,9 @@ def why_idle(
     log.info("why_idle %d.%d", cluster_id, proc_id)
     found = _find_job(cluster_id, proc_id, [])  # the whole ad: a slot's START may read any attribute
     job = found.ad
-    out: dict[str, Any] = pool.tag_schedd({"job": f"{cluster_id}.{proc_id}", "status": classads.status_name(job)}, found.schedd)
+    out: dict[str, Any] = pool.tag_schedd(
+        {"job": f"{cluster_id}.{proc_id}", "status": classads.status_name(job)}, found.schedd
+    )
     warnings = list(found.warnings)
     if not found.in_queue or get(job, "JobStatus") != JobStatus.IDLE:
         return {**out, **_not_idle(job, found.in_queue)}
@@ -559,19 +566,25 @@ def why_idle(
 
     reasons = diagnose.reasons(matched, schedd, priority, competing)
     if get(job, "ConcurrencyLimits"):
-        reasons.append(f"The job uses concurrency limits ({get(job, 'ConcurrencyLimits')}); the negotiator "
-                       "also holds it back while those limits are used up.")
-    out.update({
-        "idle_since": classads.ts(get(job, "EnteredCurrentStatus")),
-        "reasons": reasons,
-        "slot_filter": settings.slot_constraint,
-        **matched,
-        "schedd_health": schedd,
-        "priority": priority,
-    })
+        reasons.append(
+            f"The job uses concurrency limits ({get(job, 'ConcurrencyLimits')}); the negotiator "
+            "also holds it back while those limits are used up."
+        )
+    out.update(
+        {
+            "idle_since": classads.ts(get(job, "EnteredCurrentStatus")),
+            "reasons": reasons,
+            "slot_filter": settings.slot_constraint,
+            **matched,
+            "schedd_health": schedd,
+            "priority": priority,
+        }
+    )
     if get(job, "LastRejMatchReason"):
-        out["negotiator_last_said"] = {"reason": get(job, "LastRejMatchReason"),
-                                       "at": classads.ts(get(job, "LastRejMatchTime"))}
+        out["negotiator_last_said"] = {
+            "reason": get(job, "LastRejMatchReason"),
+            "at": classads.ts(get(job, "LastRejMatchTime")),
+        }
     if get(job, "NumJobStarts", 0):
         out["times_started_before"] = get(job, "NumJobStarts")
     if warnings:

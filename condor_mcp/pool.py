@@ -304,7 +304,12 @@ def query_slots(projection: list[str], constraint: str | None = None) -> list[cl
 
 
 SCHEDD_PROJECTION = [
-    "Name", "RecentDaemonCoreDutyCycle", "MaxJobsRunning", "TotalRunningJobs", "TotalIdleJobs", "TotalHeldJobs",
+    "Name",
+    "RecentDaemonCoreDutyCycle",
+    "MaxJobsRunning",
+    "TotalRunningJobs",
+    "TotalIdleJobs",
+    "TotalHeldJobs",
 ]
 
 
@@ -326,8 +331,7 @@ def schedd_ads() -> dict[str, classad.ClassAd | None]:
         ads = call(worker.collector_query, settings.collector, htcondor.AdType.Schedd, constraint, SCHEDD_PROJECTION)
     except CONDOR_ERRORS as exc:
         raise ToolError(
-            f"Could not read the schedd ads from the collector "
-            f"({settings.collector or 'from HTCondor config'}): {exc}."
+            f"Could not read the schedd ads from the collector ({settings.collector or 'from HTCondor config'}): {exc}."
         ) from exc
     found = {str(get(ad, "Name")).lower(): ad for ad in ads}  # the collector matches Name ignoring case
     return {name: found.get(name.lower()) for name in names}
@@ -338,7 +342,10 @@ def query_submitters() -> list[classad.ClassAd]:
     now, with the user's idle, running and held counts there."""
     try:
         return call(
-            worker.collector_query, settings.collector, htcondor.AdType.Submitter, "True",
+            worker.collector_query,
+            settings.collector,
+            htcondor.AdType.Submitter,
+            "True",
             ["Name", "IdleJobs", "RunningJobs", "HeldJobs"],
         )
     except CONDOR_ERRORS as exc:
@@ -402,10 +409,13 @@ def accountant_ads() -> Priorities:
             except ToolError as exc:
                 _priority_error = (time.time(), str(exc))
             except CONDOR_ERRORS as exc:
-                _priority_error = (time.time(), (
-                    f"Could not get user priorities from the negotiator: {exc}. Is it up? "
-                    "Check with `condor_userprio`, and CONDOR_MCP_COLLECTOR if set."
-                ))
+                _priority_error = (
+                    time.time(),
+                    (
+                        f"Could not get user priorities from the negotiator: {exc}. Is it up? "
+                        "Check with `condor_userprio`, and CONDOR_MCP_COLLECTOR if set."
+                    ),
+                )
         if _priorities is None:
             assert _priority_error is not None
             raise ToolError(_priority_error[1])

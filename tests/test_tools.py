@@ -18,7 +18,17 @@ NOBODY = "condor-mcp-nobody"
 
 async def test_tool_annotations_split():
     """Clients use the annotations to decide what to confirm with the user."""
-    read_only = {"job_details", "list_jobs", "hold_reasons", "job_history", "job_output", "pool_status", "user_priority", "why_idle", "draft_submit"}
+    read_only = {
+        "job_details",
+        "list_jobs",
+        "hold_reasons",
+        "job_history",
+        "job_output",
+        "pool_status",
+        "user_priority",
+        "why_idle",
+        "draft_submit",
+    }
     write = {"submit_job", "hold_job", "release_job", "remove_job"}
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
@@ -185,9 +195,17 @@ def test_schedd_names_match_ignoring_case(monkeypatch):
     assert pool.schedd_ads()[name] is not None
 
 
-@pytest.mark.parametrize("duty, load", [
-    (-0.01, "ok"), (0.0, "ok"), (0.49, "ok"), (0.5, "busy"), (0.8, "strained"), (0.95, "overloaded"),
-])
+@pytest.mark.parametrize(
+    "duty, load",
+    [
+        (-0.01, "ok"),
+        (0.0, "ok"),
+        (0.49, "ok"),
+        (0.5, "busy"),
+        (0.8, "strained"),
+        (0.95, "overloaded"),
+    ],
+)
 def test_schedd_load_names(duty, load):
     import classad2 as classad
 

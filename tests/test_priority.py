@@ -112,27 +112,46 @@ async def test_rank_counts_only_competing_users_ahead(monkeypatch):
     from condor_mcp import pool
 
     def record(name, priority, group=False):
-        return classad.ClassAd({"Name": name, "Priority": priority, "PriorityFactor": 1000.0,
-                                "IsAccountingGroup": group, "WeightedAccumulatedUsage": 7200.0})
+        return classad.ClassAd(
+            {
+                "Name": name,
+                "Priority": priority,
+                "PriorityFactor": 1000.0,
+                "IsAccountingGroup": group,
+                "WeightedAccumulatedUsage": 7200.0,
+            }
+        )
 
     def submitter(name, idle=0, running=0, held=0):
         return classad.ClassAd({"Name": name, "IdleJobs": idle, "RunningJobs": running, "HeldJobs": held})
 
-    monkeypatch.setattr(pool, "accountant_ads", lambda: pool.Priorities([
-        record("alice@d", 900.0),
-        record("group_x.alice@d", 300.0),
-        record("bob@d", 200.0),
-        record("carol@d", 100.0),
-        record("dave@d", 50.0),
-        record("<none>", 1.0, group=True),
-    ], 0.0, None))
-    monkeypatch.setattr(pool, "query_submitters", lambda: [
-        submitter("alice@d", idle=5),
-        submitter("bob@d", running=2),
-        submitter("bob@d", idle=1),  # a second schedd
-        submitter("carol@d", held=3),  # held only, so not competing
-        submitter("erin@d", idle=1),  # no record yet
-    ])
+    monkeypatch.setattr(
+        pool,
+        "accountant_ads",
+        lambda: pool.Priorities(
+            [
+                record("alice@d", 900.0),
+                record("group_x.alice@d", 300.0),
+                record("bob@d", 200.0),
+                record("carol@d", 100.0),
+                record("dave@d", 50.0),
+                record("<none>", 1.0, group=True),
+            ],
+            0.0,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        pool,
+        "query_submitters",
+        lambda: [
+            submitter("alice@d", idle=5),
+            submitter("bob@d", running=2),
+            submitter("bob@d", idle=1),  # a second schedd
+            submitter("carol@d", held=3),  # held only, so not competing
+            submitter("erin@d", idle=1),  # no record yet
+        ],
+    )
 
     out = await call("user_priority", owner="alice")
     assert out["users_competing"] == 3

@@ -108,10 +108,12 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
     if requirements is not None:
         for clause in split_clauses(str(requirements)):
             probe = _with_requirements(job, clause)
-            clauses.append({
-                "clause": str(job.flatten(classad.ExprTree(clause))),
-                "rules_out": sum(1 for slot in sized if not slot.matches(probe)),
-            })
+            clauses.append(
+                {
+                    "clause": str(job.flatten(classad.ExprTree(clause))),
+                    "rules_out": sum(1 for slot in sized if not slot.matches(probe)),
+                }
+            )
     meets = [i for i, slot in enumerate(sized) if slot.matches(job)]
     accepts = [i for i in meets if job.matches(sized[i])]
     now = [i for i in accepts if free_now(slots[i]) and slots[i].symmetricMatch(job)]
@@ -131,8 +133,11 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
             slot = slots[i]
             if (get(slot, "GPUs", 0) or 0) < gpus or not free_now(slot):
                 continue
-            missing = [unit for attr, _, request, unit in RESOURCES[:3]
-                       if (get(slot, attr, 0) or 0) < (get(job, request, 0) or 0)]
+            missing = [
+                unit
+                for attr, _, request, unit in RESOURCES[:3]
+                if (get(slot, attr, 0) or 0) < (get(job, request, 0) or 0)
+            ]
             if missing:
                 short.append((slot, missing))
         if short:
@@ -170,52 +175,72 @@ def reasons(
     classads.schedd_health row and priority a user_priority row for the job's user."""
     out = []
     n = matched["slots_considered"]
-    too_big = [f"{_amount(v['requested'])} {v['unit']}, but the largest slot has {_amount(v['largest_slot'])}"
-               for v in matched["largest"].values() if v["requested"] > v["largest_slot"]]
+    too_big = [
+        f"{_amount(v['requested'])} {v['unit']}, but the largest slot has {_amount(v['largest_slot'])}"
+        for v in matched["largest"].values()
+        if v["requested"] > v["largest_slot"]
+    ]
     if too_big:
         out.append("The job asks for more than any slot has: " + "; ".join(too_big) + ".")
     if matched["meet_requirements"] == 0:
         clauses = sorted(matched["requirements"], key=lambda c: c["rules_out"], reverse=True)
         everywhere = [c["clause"] for c in clauses if c["rules_out"] == n]
         if len(everywhere) == 1:
-            out.append(f"No slot meets the job's requirements: {everywhere[0]} rules out every one of "
-                       f"the {_slots(n)}.")
+            out.append(f"No slot meets the job's requirements: {everywhere[0]} rules out every one of the {_slots(n)}.")
         elif everywhere:
-            out.append(f"No slot meets the job's requirements: each of {'; '.join(everywhere)} rules out "
-                       f"every one of the {_slots(n)}.")
+            out.append(
+                f"No slot meets the job's requirements: each of {'; '.join(everywhere)} rules out "
+                f"every one of the {_slots(n)}."
+            )
         elif clauses:
-            out.append(f"No slot meets all of the job's requirements at once. The one that rules out "
-                       f"the most is {clauses[0]['clause']} ({clauses[0]['rules_out']} of {_slots(n)}).")
+            out.append(
+                f"No slot meets all of the job's requirements at once. The one that rules out "
+                f"the most is {clauses[0]['clause']} ({clauses[0]['rules_out']} of {_slots(n)})."
+            )
         else:
             out.append(f"None of the {_slots(n)} meets the job's requirements.")
     elif matched["accept_the_job"] == 0:
-        out.append(f"The job's requirements are met by {_slots(matched['meet_requirements'])}, but none of "
-                   "them accepts the job: their START policy or resource limits turn it away.")
+        out.append(
+            f"The job's requirements are met by {_slots(matched['meet_requirements'])}, but none of "
+            "them accepts the job: their START policy or resource limits turn it away."
+        )
     elif matched["free_now"] == 0:
-        line = (f"Every slot that could run the job ({_slots(matched['accept_the_job'])}) is busy, so it "
-                "waits for one to free up.")
+        line = (
+            f"Every slot that could run the job ({_slots(matched['accept_the_job'])}) is busy, so it "
+            "waits for one to free up."
+        )
         if priority and priority.get("rank", 1) > 1:
-            line += (f" Its user ranks {priority['rank']} of {users_competing} users with jobs waiting or "
-                     "running, and the ones ahead are offered free slots first.")
+            line += (
+                f" Its user ranks {priority['rank']} of {users_competing} users with jobs waiting or "
+                "running, and the ones ahead are offered free slots first."
+            )
         out.append(line)
     else:
         line = f"{_slots(matched['free_now'])} could start the job now."
         if priority and priority.get("rank", 1) > 1:
-            line += (f" Users ahead of its user in the fair-share order ({priority['rank'] - 1} of them) "
-                     "may take them first.")
+            line += (
+                f" Users ahead of its user in the fair-share order ({priority['rank'] - 1} of them) "
+                "may take them first."
+            )
         else:
             line += " It should start at one of the negotiator's next cycles."
         out.append(line)
     stranded = matched["stranded_gpus"]
     if stranded:
         machines = len(stranded["machines"])
-        out.append(f"{stranded['gpus']} GPUs that fit the job are free on {machines} "
-                   f"{'machine' if machines == 1 else 'machines'}, but with too few "
-                   f"{' and '.join(stranded['short_of'])} left to go with them.")
+        out.append(
+            f"{stranded['gpus']} GPUs that fit the job are free on {machines} "
+            f"{'machine' if machines == 1 else 'machines'}, but with too few "
+            f"{' and '.join(stranded['short_of'])} left to go with them."
+        )
     if schedd and "MaxJobsRunning" in schedd.get("note", ""):
-        out.append(f"The job's schedd {schedd['name']} is at its cap of {schedd['max_running']} running "
-                   "jobs, so none of its jobs start until running ones end.")
+        out.append(
+            f"The job's schedd {schedd['name']} is at its cap of {schedd['max_running']} running "
+            "jobs, so none of its jobs start until running ones end."
+        )
     if schedd and schedd.get("load") == "overloaded":
-        out.append(f"The job's schedd {schedd['name']} is overloaded (duty cycle {schedd['duty_cycle']}), "
-                   "so it is slow to start jobs.")
+        out.append(
+            f"The job's schedd {schedd['name']} is overloaded (duty cycle {schedd['duty_cycle']}), "
+            "so it is slow to start jobs."
+        )
     return out

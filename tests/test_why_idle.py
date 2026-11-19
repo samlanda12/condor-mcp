@@ -21,8 +21,13 @@ def unmatchable():
     """Two idle jobs no slot can run: one requires an architecture no slot has, the other
     asks for more CPUs than any machine has."""
     schedd = htcondor.Schedd()
-    common = {f"+{TAG}": "true", "executable": "/bin/sleep", "arguments": "60",
-              "request_memory": "64MB", "request_disk": "10MB"}
+    common = {
+        f"+{TAG}": "true",
+        "executable": "/bin/sleep",
+        "arguments": "60",
+        "request_memory": "64MB",
+        "request_disk": "10MB",
+    }
     sparc = schedd.submit(htcondor.Submit({**common, "requirements": 'TARGET.Arch == "SPARC"'})).cluster()
     big = schedd.submit(htcondor.Submit({**common, "request_cpus": "999"})).cluster()
     try:
@@ -74,20 +79,32 @@ SLOT_REQUIREMENTS = (
 
 def slot(name, cpus, memory, gpus=0, totals=None, partitionable=True, state="Unclaimed", start="True"):
     total_cpus, total_memory, total_gpus = totals or (cpus, memory, gpus)
-    ad = classad.ClassAd({
-        "Name": f"slot1@{name}", "Machine": name, "Arch": "X86_64", "State": state,
-        "PartitionableSlot": partitionable, "Cpus": cpus, "Memory": memory, "Disk": 10**7, "GPUs": gpus,
-        "TotalSlotCpus": total_cpus, "TotalSlotMemory": total_memory, "TotalSlotDisk": 10**7,
-        "TotalSlotGPUs": total_gpus,
-    })
+    ad = classad.ClassAd(
+        {
+            "Name": f"slot1@{name}",
+            "Machine": name,
+            "Arch": "X86_64",
+            "State": state,
+            "PartitionableSlot": partitionable,
+            "Cpus": cpus,
+            "Memory": memory,
+            "Disk": 10**7,
+            "GPUs": gpus,
+            "TotalSlotCpus": total_cpus,
+            "TotalSlotMemory": total_memory,
+            "TotalSlotDisk": 10**7,
+            "TotalSlotGPUs": total_gpus,
+        }
+    )
     ad["START"] = classad.ExprTree(start)
     ad["Requirements"] = classad.ExprTree(SLOT_REQUIREMENTS)
     return ad
 
 
 def gpu_job():
-    job = classad.ClassAd({"Owner": "alice", "RequestCpus": 4, "RequestMemory": 8000, "RequestDisk": 100,
-                           "RequestGPUs": 1})
+    job = classad.ClassAd(
+        {"Owner": "alice", "RequestCpus": 4, "RequestMemory": 8000, "RequestDisk": 100, "RequestGPUs": 1}
+    )
     job["Requirements"] = classad.ExprTree(
         '(TARGET.Arch == "X86_64") && (TARGET.Cpus >= RequestCpus) && (TARGET.Memory >= RequestMemory) '
         "&& (TARGET.GPUs >= RequestGPUs)"
@@ -97,7 +114,11 @@ def gpu_job():
 
 def test_split_clauses():
     assert diagnose.split_clauses('a && (b || c) && d == "x && (y" && f(g && h)') == [
-        "a", "b || c", 'd == "x && (y"', "f(g && h)"]
+        "a",
+        "b || c",
+        'd == "x && (y"',
+        "f(g && h)",
+    ]
     assert diagnose.split_clauses("((a) && (b))") == ["a", "b"]
     assert diagnose.split_clauses("(a) || (b)") == ["(a) || (b)"]
 
@@ -109,14 +130,18 @@ def test_stranded_gpus():
     assert matched["stranded_gpus"] == {"gpus": 2, "machines": ["gpu1"], "short_of": ["CPUs", "MB of memory"]}
     reasons = diagnose.reasons(matched)
     assert reasons[0].startswith("Every slot that could run the job (1 slot) is busy")
-    assert reasons[1] == "2 GPUs that fit the job are free on 1 machine, but with too few CPUs and MB of memory left to go with them."
+    assert (
+        reasons[1]
+        == "2 GPUs that fit the job are free on 1 machine, but with too few CPUs and MB of memory left to go with them."
+    )
 
 
 def test_free_now_and_users_ahead():
     matched = diagnose.match(gpu_job(), [slot("gpu1", 8, 16000, gpus=1, totals=(32, 64000, 4))])
     assert matched["free_now"] == 1 and matched["stranded_gpus"] == {}
-    assert diagnose.reasons(matched) == ["1 slot could start the job now. It should start at one of the "
-                                         "negotiator's next cycles."]
+    assert diagnose.reasons(matched) == [
+        "1 slot could start the job now. It should start at one of the negotiator's next cycles."
+    ]
     ahead = diagnose.reasons(matched, priority={"rank": 3}, users_competing=5)
     assert "(2 of them) may take them first" in ahead[0]
 
@@ -144,8 +169,13 @@ def test_no_clause_rules_out_every_slot():
 
 def test_schedd_limits():
     matched = diagnose.match(gpu_job(), [slot("gpu1", 8, 16000, gpus=1)])
-    capped = {"name": "s1", "max_running": 10, "note": "At its MaxJobsRunning cap: ...", "load": "overloaded",
-              "duty_cycle": 0.97}
+    capped = {
+        "name": "s1",
+        "max_running": 10,
+        "note": "At its MaxJobsRunning cap: ...",
+        "load": "overloaded",
+        "duty_cycle": 0.97,
+    }
     reasons = diagnose.reasons(matched, schedd=capped)
     assert "s1 is at its cap of 10 running jobs" in reasons[1]
     assert "s1 is overloaded (duty cycle 0.97)" in reasons[2]
