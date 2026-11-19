@@ -13,13 +13,11 @@ dependencies = [
 condor-mcp = "condor_mcp.server:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "anyio>=4", "mypy>=1.14", "ruff>=0.17"]
+dev = ["pytest>=8", "anyio>=4", "mypy>=1.14", "ruff>=0.17,<0.18"]
 
 [tool.ruff]
 line-length = 120
-
-[tool.ruff.lint.isort]
-known-first-party = ["condor_mcp", "conftest"]
+src = [".", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

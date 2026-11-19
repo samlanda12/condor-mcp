@@ -73,8 +73,8 @@ jobs:
 
             # Annotates the PR diff with each finding
             - name: run ruff check
-              run: uv run --locked ruff check --output-format github
+              run: uv run --locked --only-dev ruff check --output-format github
 
             - name: run ruff format
               if: ${{ !cancelled() }}
-              run: uv run --locked ruff format --check
+              run: uv run --locked --only-dev ruff format --check
