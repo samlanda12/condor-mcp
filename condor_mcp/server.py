@@ -414,11 +414,12 @@ class _PriorityTable(NamedTuple):
     jobs: dict[str, Counter[str]]  # idle, running and held jobs by submitter name
     competing: set[str]  # submitters with idle or running jobs
     read_at: float
+    warning: str | None  # the negotiator did not answer, so the records are older
 
 
 def _priority_table() -> _PriorityTable:
     """The negotiator's records for each submitter, joined with the submitter ads."""
-    ads, read_at = pool.accountant_ads()
+    ads, read_at, warning = pool.accountant_ads()
     records = {get(ad, "Name"): ad for ad in ads if not get(ad, "IsAccountingGroup", False)}
     jobs: dict[str, Counter[str]] = {}
     for ad in pool.query_submitters():
@@ -426,7 +427,7 @@ def _priority_table() -> _PriorityTable:
         for key, attr in (("idle", "IdleJobs"), ("running", "RunningJobs"), ("held", "HeldJobs")):
             counts[key] += int(get(ad, attr, 0) or 0)
     competing = {user for user, counts in jobs.items() if counts["idle"] or counts["running"]}
-    return _PriorityTable(records, jobs, competing, read_at)
+    return _PriorityTable(records, jobs, competing, read_at, warning)
 
 
 def _priority_row(user: str, table: _PriorityTable) -> dict[str, Any]:
@@ -459,7 +460,8 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     who submits under accounting groups has one row per group. 'all' lists the users
     with jobs in a queue now. Job counts come from the schedds' submitter ads, which can
     trail the queue by a few minutes. The negotiator's answer is reused for up to five
-    minutes; as_of says when it was read."""
+    minutes; as_of says when it was read. When the negotiator does not answer, the last
+    answer is returned with a warning."""
     log.info("user_priority owner=%s", owner)
     _, name = pool.owner_constraint(owner)
     table = _priority_table()
@@ -481,6 +483,8 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
             f"The negotiator has no record of {name} and they have no jobs in a queue. "
             "A user's first jobs start at the best priority."
         )
+    if table.warning:
+        out["warnings"] = [table.warning]
     log.info("  -> %d rows, %d users competing", len(rows), len(table.competing))
     return out
 
@@ -548,6 +552,8 @@ def why_idle(
         table = _priority_table()
         if submitter:
             priority, competing = _priority_row(submitter, table), len(table.competing)
+        if table.warning:
+            warnings.append(table.warning)
     except ToolError as exc:
         warnings.append(str(exc))
 

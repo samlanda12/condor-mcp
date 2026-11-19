@@ -157,9 +157,12 @@ async def test_negotiator_query_times_out(monkeypatch, silent_ad):
 
     monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update={"timeout": TIMEOUT}))
     monkeypatch.setattr(pool, "locate_negotiator", lambda: silent_ad)
-    monkeypatch.setattr(pool, "_priorities", None)  # not a cached answer
     with pytest.raises(ToolError, match=rf"priorities from the negotiator: no answer within {TIMEOUT} s"):
         await call("user_priority")
+    start = time.monotonic()  # the failure is remembered, so the next call does not wait again
+    with pytest.raises(ToolError, match=rf"priorities from the negotiator: no answer within {TIMEOUT} s"):
+        await call("user_priority")
+    assert time.monotonic() - start < TIMEOUT
 
 
 async def test_reads_leave_out_a_schedd_that_does_not_answer(monkeypatch, silent_ad, live_jobs):

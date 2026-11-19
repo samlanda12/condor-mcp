@@ -38,6 +38,15 @@ async def call(name: str, **args: Any) -> Any:
         return (await client.call_tool(name, args)).data
 
 
+@pytest.fixture(autouse=True)
+def fresh_priorities(monkeypatch):
+    """Each test reads the negotiator itself: no answer or failure is kept from another."""
+    from condor_mcp import pool
+
+    monkeypatch.setattr(pool, "_priorities", None)
+    monkeypatch.setattr(pool, "_priority_error", None)
+
+
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"

@@ -161,7 +161,33 @@ async def test_pool_status_schedd_health(live_jobs):
     assert schedd["jobs"]["running"] <= schedd["max_running"]
 
 
-@pytest.mark.parametrize("duty, load", [(0.0, "ok"), (0.49, "ok"), (0.5, "busy"), (0.8, "strained"), (0.95, "overloaded")])
+async def test_schedd_health_through_a_named_collector(monkeypatch, live_jobs):
+    """With only CONDOR_MCP_COLLECTOR set, the health is still the local schedd's full ad,
+    not the first schedd's location ad."""
+    import htcondor2 as htcondor
+
+    from condor_mcp import pool
+
+    collector = htcondor.param["COLLECTOR_HOST"]
+    monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update={"collector": collector}))
+    [schedd] = (await call("pool_status"))["schedds"]
+    assert schedd["name"] == htcondor.Collector().locate(htcondor.DaemonType.Schedd)["Name"]
+    assert schedd["jobs"]["running"] >= 1 and schedd["max_running"] and "duty_cycle" in schedd
+
+
+def test_schedd_names_match_ignoring_case(monkeypatch):
+    import htcondor2 as htcondor
+
+    from condor_mcp import pool
+
+    name = htcondor.Collector().locate(htcondor.DaemonType.Schedd)["Name"].upper()
+    monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update={"schedds": [name]}))
+    assert pool.schedd_ads()[name] is not None
+
+
+@pytest.mark.parametrize("duty, load", [
+    (-0.01, "ok"), (0.0, "ok"), (0.49, "ok"), (0.5, "busy"), (0.8, "strained"), (0.95, "overloaded"),
+])
 def test_schedd_load_names(duty, load):
     import classad2 as classad
 
@@ -169,7 +195,7 @@ def test_schedd_load_names(duty, load):
 
     ad = classad.ClassAd({"RecentDaemonCoreDutyCycle": duty, "TotalRunningJobs": 5, "MaxJobsRunning": 10})
     row = classads.schedd_health("s", ad)
-    assert row["load"] == load and "note" not in row
+    assert row["load"] == load and row["duty_cycle"] >= 0 and "note" not in row
 
 
 def test_schedd_at_its_running_cap():

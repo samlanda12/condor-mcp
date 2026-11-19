@@ -312,18 +312,25 @@ def schedd_ads() -> dict[str, classad.ClassAd | None]:
     """Each configured schedd's ad from the collector, or the local schedd's, by name.
     A configured schedd the collector has no ad for maps to None."""
     try:
-        if not settings.schedds:
-            ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Schedd, None)
-            return {get(ad, "Name", "local"): ad} if ad is not None else {"local": None}
-        names = " || ".join(f"Name == {classad.quote(name)}" for name in settings.schedds)
-        ads = call(worker.collector_query, settings.collector, htcondor.AdType.Schedd, names, SCHEDD_PROJECTION)
+        if settings.schedds:
+            names = settings.schedds
+        else:
+            # The schedd htcondor.Schedd() talks to. Collector.locate with no name finds it
+            # only through the local config; through a named collector it returns the first
+            # schedd ad, and only the attributes needed to contact it.
+            local = call(worker.collector_locate, None, htcondor.DaemonType.Schedd, None)
+            if local is None:
+                return {"local": None}
+            names = [get(local, "Name")]
+        constraint = " || ".join(f"Name == {classad.quote(name)}" for name in names)
+        ads = call(worker.collector_query, settings.collector, htcondor.AdType.Schedd, constraint, SCHEDD_PROJECTION)
     except CONDOR_ERRORS as exc:
         raise ToolError(
             f"Could not read the schedd ads from the collector "
             f"({settings.collector or 'from HTCondor config'}): {exc}."
         ) from exc
-    found = {get(ad, "Name"): ad for ad in ads}
-    return {name: found.get(name) for name in settings.schedds}
+    found = {str(get(ad, "Name")).lower(): ad for ad in ads}  # the collector matches Name ignoring case
+    return {name: found.get(name.lower()) for name in names}
 
 
 def query_submitters() -> list[classad.ClassAd]:
@@ -342,40 +349,70 @@ def query_submitters() -> list[classad.ClassAd]:
 
 
 def locate_negotiator() -> classad.ClassAd | None:
-    """The configured collector's negotiator, or None for the local config's."""
+    """The configured collector's negotiator, or None for the local config's. A configured
+    collector with no negotiator ad fails rather than fall back to the local config, which
+    may be another pool's."""
     if not settings.collector:
         return None
     try:
-        return call(worker.collector_locate, settings.collector, htcondor.DaemonType.Negotiator, None)
+        ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Negotiator, None)
     except CONDOR_ERRORS as exc:
         raise ToolError(
             f"Could not find the negotiator through the collector ({settings.collector}): {exc}. "
             "Check CONDOR_MCP_COLLECTOR."
         ) from exc
+    if ad is None:
+        raise ToolError(
+            f"The collector ({settings.collector}) has no negotiator ad, so the negotiator may be "
+            "down or restarting. Check with `condor_status -negotiator`."
+        )
+    return ad
 
 
 # The negotiator updates priorities once per negotiation cycle and answers no queries while
 # it negotiates, which on a busy pool can take minutes, so its answer is kept this long.
 PRIORITY_MAX_AGE = 300
+# After a failed read, callers get the same failure (or the last answer) for this long
+# instead of each waiting out the timeout again.
+PRIORITY_RETRY_AFTER = 60
 _priorities: tuple[float, list[classad.ClassAd]] | None = None
+_priority_error: tuple[float, str] | None = None
 _priorities_lock = threading.Lock()
 
 
-def accountant_ads() -> tuple[list[classad.ClassAd], float]:
-    """The negotiator's accounting ads and the time.time() they were read, at most
-    PRIORITY_MAX_AGE seconds ago. Callers wait on one read rather than each making one."""
-    global _priorities
+class Priorities(NamedTuple):
+    ads: list[classad.ClassAd]
+    read_at: float  # time.time() of the read
+    warning: str | None  # set when the latest read failed and these ads are older
+
+
+def accountant_ads() -> Priorities:
+    """The negotiator's accounting ads, read at most PRIORITY_MAX_AGE seconds ago. Callers
+    wait on one read rather than each making one. When a refresh fails, the last answer
+    is served with a warning; with no answer to serve, the failure is raised. Either way
+    the failure is remembered for PRIORITY_RETRY_AFTER seconds."""
+    global _priorities, _priority_error
     with _priorities_lock:
-        if _priorities is None or time.time() - _priorities[0] > PRIORITY_MAX_AGE:
+        now = time.time()
+        stale = _priorities is None or now - _priorities[0] > PRIORITY_MAX_AGE
+        if stale and (_priority_error is None or now - _priority_error[0] > PRIORITY_RETRY_AFTER):
             try:
                 ads = call(worker.negotiator_priorities, locate_negotiator())
+                _priorities, _priority_error = (time.time(), ads), None
+            except ToolError as exc:
+                _priority_error = (time.time(), str(exc))
             except CONDOR_ERRORS as exc:
-                raise ToolError(
+                _priority_error = (time.time(), (
                     f"Could not get user priorities from the negotiator: {exc}. Is it up? "
                     "Check with `condor_userprio`, and CONDOR_MCP_COLLECTOR if set."
-                ) from exc
-            _priorities = (time.time(), ads)
-        return _priorities[1], _priorities[0]
+                ))
+        if _priorities is None:
+            assert _priority_error is not None
+            raise ToolError(_priority_error[1])
+        warning = None
+        if _priority_error is not None:  # a success clears it, so these ads predate the failure
+            warning = f"{_priority_error[1]} The priorities shown are the last answer, from as_of."
+        return Priorities(_priorities[1], _priorities[0], warning)
 
 
 def owner_constraint(owner: str) -> tuple[str, str | None]:

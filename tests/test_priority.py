@@ -5,6 +5,7 @@ from __future__ import annotations
 import getpass
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from conftest import call
 
@@ -43,11 +44,64 @@ async def test_user_priority_unknown_user():
 def test_negotiator_answer_is_reused(monkeypatch):
     from condor_mcp import pool
 
-    monkeypatch.setattr(pool, "_priorities", None)
-    ads, read_at = pool.accountant_ads()
-    assert pool.accountant_ads()[1] == read_at
+    ads, read_at, warning = pool.accountant_ads()
+    assert warning is None and pool.accountant_ads().read_at == read_at
     monkeypatch.setattr(pool, "_priorities", (read_at - pool.PRIORITY_MAX_AGE - 1, ads))
-    assert pool.accountant_ads()[1] > read_at - pool.PRIORITY_MAX_AGE - 1
+    assert pool.accountant_ads().read_at > read_at - pool.PRIORITY_MAX_AGE - 1
+
+
+def _failing_negotiator(monkeypatch):
+    """Make every negotiator read fail, and count the attempts."""
+    from condor_mcp import pool
+
+    attempts = []
+
+    def fail():
+        attempts.append(1)
+        raise ToolError("The collector has no negotiator ad.")
+
+    monkeypatch.setattr(pool, "locate_negotiator", fail)
+    return attempts
+
+
+async def test_stale_answer_served_when_the_negotiator_fails(monkeypatch):
+    """An old answer is better than none: it comes back with its as_of and a warning,
+    and the failure is not retried on every call."""
+    from condor_mcp import pool
+
+    ads, read_at, _ = pool.accountant_ads()
+    monkeypatch.setattr(pool, "_priorities", (read_at - pool.PRIORITY_MAX_AGE - 1, ads))
+    attempts = _failing_negotiator(monkeypatch)
+    out = await call("user_priority")
+    assert out["users"] and "no negotiator ad" in out["warnings"][0] and "last answer" in out["warnings"][0]
+    assert (await call("user_priority"))["warnings"] == out["warnings"]
+    assert len(attempts) == 1
+
+
+def test_failure_is_remembered_then_retried(monkeypatch):
+    from condor_mcp import pool
+
+    attempts = _failing_negotiator(monkeypatch)
+    for _ in range(2):
+        with pytest.raises(ToolError, match="no negotiator ad"):
+            pool.accountant_ads()
+    assert len(attempts) == 1
+    when, message = pool._priority_error
+    monkeypatch.setattr(pool, "_priority_error", (when - pool.PRIORITY_RETRY_AFTER - 1, message))
+    with pytest.raises(ToolError, match="no negotiator ad"):
+        pool.accountant_ads()
+    assert len(attempts) == 2
+
+
+def test_missing_negotiator_does_not_fall_back_to_local_config(monkeypatch):
+    """A configured collector with no negotiator ad must not mean the local config's
+    negotiator, which may belong to another pool."""
+    from condor_mcp import pool, worker
+
+    monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update={"collector": "pool-a.example.edu"}))
+    monkeypatch.setattr(pool, "call", lambda fn, *args: None if fn is worker.collector_locate else pytest.fail())
+    with pytest.raises(ToolError, match="no negotiator ad"):
+        pool.locate_negotiator()
 
 
 async def test_rank_counts_only_competing_users_ahead(monkeypatch):
@@ -64,14 +118,14 @@ async def test_rank_counts_only_competing_users_ahead(monkeypatch):
     def submitter(name, idle=0, running=0, held=0):
         return classad.ClassAd({"Name": name, "IdleJobs": idle, "RunningJobs": running, "HeldJobs": held})
 
-    monkeypatch.setattr(pool, "accountant_ads", lambda: ([
+    monkeypatch.setattr(pool, "accountant_ads", lambda: pool.Priorities([
         record("alice@d", 900.0),
         record("group_x.alice@d", 300.0),
         record("bob@d", 200.0),
         record("carol@d", 100.0),
         record("dave@d", 50.0),
         record("<none>", 1.0, group=True),
-    ], 0.0))
+    ], 0.0, None))
     monkeypatch.setattr(pool, "query_submitters", lambda: [
         submitter("alice@d", idle=5),
         submitter("bob@d", running=2),

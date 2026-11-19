@@ -353,7 +353,8 @@ def schedd_health(name: str, ad: classad.ClassAd | None) -> dict[str, Any]:
     row: dict[str, Any] = {"name": name}
     duty = get(ad, "RecentDaemonCoreDutyCycle")
     if duty is not None:
-        row["duty_cycle"] = round(float(duty), 3)
+        duty = max(float(duty), 0.0)  # derived as 1 - idle/cycle time, it can dip below 0
+        row["duty_cycle"] = round(duty, 3)
         row["load"] = next(label for floor, label in SCHEDD_LOAD if duty >= floor)
     running, cap = get(ad, "TotalRunningJobs"), get(ad, "MaxJobsRunning")
     row["jobs"] = {"running": running, "idle": get(ad, "TotalIdleJobs"), "held": get(ad, "TotalHeldJobs")}
