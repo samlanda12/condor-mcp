@@ -257,7 +257,7 @@ def find_job(cluster_id: int, proc_id: int, projection: list[str]) -> FoundJob |
     with a warning that the ID could not be checked there. A job in no queue that answered
     fails instead, since the job may be on the schedd that did not."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
-    projection = [*projection, "QDate"]
+    projection = [*projection, "QDate"] if projection else []  # an empty projection is the whole ad
     in_queues, failed = query_jobs(constraint, projection, 1)
     found = [FoundJob(name, ad, True, []) for name, ad in in_queues]
     if not found:

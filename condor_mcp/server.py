@@ -7,7 +7,7 @@ import getpass
 import os
 from collections import Counter
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -17,7 +17,7 @@ import classad2 as classad
 import htcondor2 as htcondor
 from htcondor2 import JobStatus
 
-from condor_mcp import classads, pool, submit, worker
+from condor_mcp import classads, diagnose, pool, submit, worker
 from condor_mcp.classads import get
 from condor_mcp.pool import CONDOR_ERRORS, log, settings
 from condor_mcp.worker import NoAnswer
@@ -340,8 +340,8 @@ def pool_status(
     name (ok below 0.50, busy, strained from 0.80, overloaded from 0.95, when it is slow
     to start jobs and answer queries), its running, idle and held jobs, and its
     MaxJobsRunning cap, past which none of its jobs start.
-    Use this for "is the cluster busy", "are there free GPUs", or "why is my job
-    still idle". Slot counts include dynamic slots, so a machine with a
+    Use this for "is the cluster busy" or "are there free GPUs"; for why one job is
+    still idle, use why_idle. Slot counts include dynamic slots, so a machine with a
     partitionable slot shows one unclaimed slot holding its spare resources plus
     one claimed slot per running job. Which slots count is set by the server's
     slot filter."""
@@ -416,6 +416,42 @@ def _is_user(submitter: str, name: str) -> bool:
     return local == name or local.endswith(f".{name}")
 
 
+class _PriorityTable(NamedTuple):
+    records: dict[str, classad.ClassAd]  # accountant ad by submitter name
+    jobs: dict[str, Counter[str]]  # idle, running and held jobs by submitter name
+    competing: set[str]  # submitters with idle or running jobs
+    read_at: float
+
+
+def _priority_table() -> _PriorityTable:
+    """The negotiator's records for each submitter, joined with the submitter ads."""
+    ads, read_at = pool.accountant_ads()
+    records = {get(ad, "Name"): ad for ad in ads if not get(ad, "IsAccountingGroup", False)}
+    jobs: dict[str, Counter[str]] = {}
+    for ad in pool.query_submitters():
+        counts = jobs.setdefault(get(ad, "Name"), Counter())
+        for key, attr in (("idle", "IdleJobs"), ("running", "RunningJobs"), ("held", "HeldJobs")):
+            counts[key] += int(get(ad, attr, 0) or 0)
+    competing = {user for user, counts in jobs.items() if counts["idle"] or counts["running"]}
+    return _PriorityTable(records, jobs, competing, read_at)
+
+
+def _priority_row(user: str, table: _PriorityTable) -> dict[str, Any]:
+    """One user_priority row, with the user's rank among the competing submitters."""
+    def priority(name: str) -> float | None:
+        return float(get(table.records[name], "Priority", 0)) if name in table.records else None
+
+    row: dict[str, Any] = classads.priority_row(table.records[user]) if user in table.records else {"user": user}
+    mine = priority(user)
+    if mine is None:
+        row["note"] = "The negotiator has no usage record yet, so this user starts at the best priority."
+    else:
+        ahead = [u for u in table.competing if u != user and (p := priority(u)) is not None and p < mine]
+        row["rank"] = len(ahead) + 1
+    row["jobs"] = {key: table.jobs.get(user, Counter())[key] for key in ("idle", "running", "held")}
+    return row
+
+
 @mcp.tool(annotations=READ_ONLY, tags={"pool", "read-only"})
 def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     """Report fair-share priority from the negotiator. When more jobs wait than slots
@@ -433,38 +469,17 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     minutes; as_of says when it was read."""
     log.info("user_priority owner=%s", owner)
     _, name = pool.owner_constraint(owner)
-    ads, read_at = pool.accountant_ads()
-    records = {get(ad, "Name"): ad for ad in ads if not get(ad, "IsAccountingGroup", False)}
-    jobs: dict[str, Counter[str]] = {}
-    for ad in pool.query_submitters():
-        counts = jobs.setdefault(get(ad, "Name"), Counter())
-        for key, attr in (("idle", "IdleJobs"), ("running", "RunningJobs"), ("held", "HeldJobs")):
-            counts[key] += int(get(ad, attr, 0) or 0)
-
-    def priority(user: str) -> float | None:
-        return float(get(records[user], "Priority", 0)) if user in records else None
-
-    competing = {user for user, counts in jobs.items() if counts["idle"] or counts["running"]}
+    table = _priority_table()
     if name is None:
-        users = [user for user, counts in jobs.items() if sum(counts.values())]
+        users = [user for user, counts in table.jobs.items() if sum(counts.values())]
     else:
-        users = [user for user in {*records, *jobs} if _is_user(user, name)]
-    rows = []
-    for user in users:
-        row: dict[str, Any] = classads.priority_row(records[user]) if user in records else {"user": user}
-        mine = priority(user)
-        if mine is None:
-            row["note"] = "The negotiator has no usage record yet, so this user starts at the best priority."
-        else:
-            ahead = [u for u in competing if u != user and (p := priority(u)) is not None and p < mine]
-            row["rank"] = len(ahead) + 1
-        row["jobs"] = {key: jobs.get(user, Counter())[key] for key in ("idle", "running", "held")}
-        rows.append(row)
+        users = [user for user in {*table.records, *table.jobs} if _is_user(user, name)]
+    rows = [_priority_row(user, table) for user in users]
     rows.sort(key=lambda row: (row.get("effective_priority") is None, row.get("effective_priority", 0)))
 
     out: dict[str, Any] = {
-        "as_of": classads.ts(read_at),
-        "users_competing": len(competing),
+        "as_of": classads.ts(table.read_at),
+        "users_competing": len(table.competing),
         "users": rows,
     }
     if not rows:
@@ -473,7 +488,96 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
             f"The negotiator has no record of {name} and they have no jobs in a queue. "
             "A user's first jobs start at the best priority."
         )
-    log.info("  -> %d rows, %d users competing", len(rows), len(competing))
+    log.info("  -> %d rows, %d users competing", len(rows), len(table.competing))
+    return out
+
+
+def _submitter(job: classad.ClassAd) -> str | None:
+    """The name the negotiator knows the job's user by: user@domain, or group.user@domain
+    for a job submitted under an accounting group."""
+    user, group = get(job, "User"), get(job, "AccountingGroup")
+    if user and group:
+        return f"{group}@{user.rsplit('@', 1)[-1]}"
+    return user
+
+
+def _not_idle(job: classad.ClassAd, in_queue: bool) -> dict[str, Any]:
+    """What why_idle says instead for a job that is not idle."""
+    status = classads.status_name(job)
+    if not in_queue:
+        return {"note": f"The job has left the queue ({status}). job_details shows how it ended."}
+    if status == "held":
+        return {"note": "The job is held, not idle, so it will not run until it is released. Fix the "
+                "hold's cause first, or it goes straight back on hold.", "hold": classads.hold_info(job)}
+    if status == "running":
+        return {"note": f"The job is running, on {get(job, 'RemoteHost')}."}
+    return {"note": f"The job is {status}, not idle."}
+
+
+@mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
+def why_idle(
+    cluster_id: Annotated[int, ClusterField],
+    proc_id: Annotated[int, Field(ge=0, description="Process number within the cluster, the part after the dot")] = 0,
+) -> dict[str, Any]:
+    """Explain why an idle job has not started, as condor_q -better-analyze does. The
+    job is matched against every slot the server's slot filter lets through, both at
+    full size and as each slot is now. reasons gives the likely causes in plain words,
+    most likely first. The details: how many slots meet the job's requirements, how many
+    of those accept it (their START policy and resource limits), how many could start it
+    now; how many slots each requirement clause rules out; what the job asks for against
+    the largest slot; GPUs that fit but sit on machines with too few CPUs or too little
+    memory left; whether the job's schedd is at its MaxJobsRunning cap or overloaded;
+    and the job's user's place in the fair-share order, from user_priority. For a job
+    that is not idle it says what state the job is in instead."""
+    log.info("why_idle %d.%d", cluster_id, proc_id)
+    found = _find_job(cluster_id, proc_id, [])  # the whole ad: a slot's START may read any attribute
+    job = found.ad
+    out: dict[str, Any] = pool.tag_schedd({"job": f"{cluster_id}.{proc_id}", "status": classads.status_name(job)}, found.schedd)
+    warnings = list(found.warnings)
+    if not found.in_queue or get(job, "JobStatus") != JobStatus.IDLE:
+        return {**out, **_not_idle(job, found.in_queue)}
+
+    slots = pool.query_slots([], "DynamicSlot =!= true")
+    if not slots:
+        raise ToolError(_no_slots())
+    matched = diagnose.match(job, slots)
+
+    schedd = None
+    try:
+        ads = pool.schedd_ads()
+        name, ad = (found.schedd, ads.get(found.schedd)) if settings.schedds else next(iter(ads.items()))
+        schedd = classads.schedd_health(name, ad)
+    except ToolError as exc:
+        warnings.append(str(exc))
+    priority, competing = None, 0
+    submitter = _submitter(job)
+    try:
+        table = _priority_table()
+        if submitter:
+            priority, competing = _priority_row(submitter, table), len(table.competing)
+    except ToolError as exc:
+        warnings.append(str(exc))
+
+    reasons = diagnose.reasons(matched, schedd, priority, competing)
+    if get(job, "ConcurrencyLimits"):
+        reasons.append(f"The job uses concurrency limits ({get(job, 'ConcurrencyLimits')}); the negotiator "
+                       "also holds it back while those limits are used up.")
+    out.update({
+        "idle_since": classads.ts(get(job, "EnteredCurrentStatus")),
+        "reasons": reasons,
+        "slot_filter": settings.slot_constraint,
+        **matched,
+        "schedd_health": schedd,
+        "priority": priority,
+    })
+    if get(job, "LastRejMatchReason"):
+        out["negotiator_last_said"] = {"reason": get(job, "LastRejMatchReason"),
+                                       "at": classads.ts(get(job, "LastRejMatchTime"))}
+    if get(job, "NumJobStarts", 0):
+        out["times_started_before"] = get(job, "NumJobStarts")
+    if warnings:
+        out["warnings"] = warnings
+    log.info("  -> %d of %d slots fit, %d free now", matched["accept_the_job"], len(slots), matched["free_now"])
     return out
 
 
