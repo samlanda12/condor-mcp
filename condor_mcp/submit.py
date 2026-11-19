@@ -106,9 +106,7 @@ def compose(
     return f"{text}\nqueue item from (\n{items})\n"
 
 
-def check_files(
-    executable: str, input_files: list[str], queue: int | list[str], workdir: Path
-) -> list[str]:
+def check_files(executable: str, input_files: list[str], queue: int | list[str], workdir: Path) -> list[str]:
     """Checks condor_submit skips: workdir, the executable bit, and input files
     (a missing one puts the job on hold with code 13 at transfer time)."""
     warnings: list[str] = []
@@ -214,7 +212,11 @@ def dry_run(text: str, cwd: Path | None = None) -> tuple[list[classad.ClassAd], 
         try:
             proc = subprocess.run(
                 [condor_submit, "-dry-run", str(ads_file), str(sub)],
-                cwd=cwd or tmp, capture_output=True, text=True, timeout=60,
+                check=False,  # a failed dry run is reported, not raised
+                cwd=cwd or tmp,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
         except subprocess.TimeoutExpired:
             return [], ["condor_submit -dry-run did not finish within 60 seconds."]

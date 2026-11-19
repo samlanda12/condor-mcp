@@ -56,16 +56,31 @@ def _wait_for_status(schedd: htcondor.Schedd, cluster: int, status: int, timeout
 @pytest.fixture(scope="session")
 def live_jobs():
     schedd = htcondor.Schedd()
-    common = {f"+{TAG}": "true", "should_transfer_files": "YES", "transfer_output_files": '""',
-              "request_memory": "64MB", "request_disk": "10MB"}
-    running = schedd.submit(htcondor.Submit({
-        "executable": "/bin/sleep", "arguments": "900", **common,
-    })).cluster()
-    held = schedd.submit(htcondor.Submit({
-        "executable": "/bin/cat",
-        "transfer_input_files": "/nonexistent/condor-mcp-test-input.csv",
-        **common,
-    })).cluster()
+    common = {
+        f"+{TAG}": "true",
+        "should_transfer_files": "YES",
+        "transfer_output_files": '""',
+        "request_memory": "64MB",
+        "request_disk": "10MB",
+    }
+    running = schedd.submit(
+        htcondor.Submit(
+            {
+                "executable": "/bin/sleep",
+                "arguments": "900",
+                **common,
+            }
+        )
+    ).cluster()
+    held = schedd.submit(
+        htcondor.Submit(
+            {
+                "executable": "/bin/cat",
+                "transfer_input_files": "/nonexistent/condor-mcp-test-input.csv",
+                **common,
+            }
+        )
+    ).cluster()
     try:
         _wait_for_status(schedd, running, 2)
         _wait_for_status(schedd, held, 5)
@@ -74,7 +89,13 @@ def live_jobs():
         schedd.act(htcondor.JobAction.Remove, f"{TAG} == true")
 
 
-SLEEP_JOB = dict(executable="/bin/sleep", arguments="600", memory_mb=64, disk_mb=10, extra={f"+{TAG}": "true"})
+SLEEP_JOB = {
+    "executable": "/bin/sleep",
+    "arguments": "600",
+    "memory_mb": 64,
+    "disk_mb": 10,
+    "extra": {f"+{TAG}": "true"},
+}
 
 
 @pytest.fixture(scope="session")

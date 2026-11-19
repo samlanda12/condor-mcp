@@ -7,8 +7,9 @@ output so nothing is lost.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 import classad2 as classad
 from htcondor2 import JobStatus
@@ -68,6 +69,8 @@ HOLD_CODES = {
 OUTPUT_FILES = {"stdout": ("Out", "output"), "stderr": ("Err", "error"), "log": ("UserLog", "log")}
 OUTPUT_ATTRS = {kind: attr for kind, (attr, _) in OUTPUT_FILES.items()}
 
+# The projections are grouped by meaning, one group per line
+# fmt: off
 # Attributes we ask the schedd for when describing one job in full
 JOB_PROJECTION = [
     "ClusterId", "ProcId", "Owner", "JobStatus", "EnteredCurrentStatus",
@@ -118,12 +121,13 @@ SLOT_PROJECTION = [
     "EnteredCurrentActivity",
     "TotalSlotDisk", "Arch", "OpSys",
 ]
+# fmt: on
 
 
 def ts(value: Any) -> str | None:
     if not value:
         return None
-    return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(int(value), tz=UTC).isoformat()
 
 
 def get(ad: classad.ClassAd, attr: str, default: Any = None) -> Any:

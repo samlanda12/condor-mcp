@@ -1,5 +1,4 @@
-"""The MCP server: MCP tools over an HTCondor pool.
-"""
+"""The MCP server: MCP tools over an HTCondor pool."""
 
 from __future__ import annotations
 
@@ -9,13 +8,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-from pydantic import Field
-
 import classad2 as classad
 import htcondor2 as htcondor
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from htcondor2 import JobStatus
+from pydantic import Field
 
 from condor_mcp import classads, pool, submit, worker
 from condor_mcp.classads import get
@@ -28,13 +26,8 @@ READ_ONLY = {"readOnlyHint": True, "idempotentHint": True}
 # Changes the queue; a client should confirm with the user before calling.
 WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 
-JobStatusName = Literal[
-    "idle", "running", "held", "completed", "removed", "suspended", "transferring_output"
-]
-OwnerField = Field(
-    description="Whose jobs: 'me' for the user this server runs as, 'all' for everyone, "
-    "or a username."
-)
+JobStatusName = Literal["idle", "running", "held", "completed", "removed", "suspended", "transferring_output"]
+OwnerField = Field(description="Whose jobs: 'me' for the user this server runs as, 'all' for everyone, or a username.")
 
 
 def _job_projection(base: list[str]) -> list[str]:
@@ -124,10 +117,7 @@ def list_jobs(
     if not rows:
         who = f"for {name}" if name else "for anyone"
         what = f"{status} jobs" if status else "jobs"
-        out["note"] = (
-            f"No {what} in the queue {who}. Jobs that finished have left the queue; "
-            "job_history lists them."
-        )
+        out["note"] = f"No {what} in the queue {who}. Jobs that finished have left the queue; job_history lists them."
     if failed:
         out["warnings"] = list(failed.values())
     log.info("  -> %d of %d jobs", len(rows), matching)
@@ -265,8 +255,10 @@ def job_output(
     proc_id: Annotated[int, Field(ge=0, description="Process number within the cluster, the part after the dot")] = 0,
     which: Annotated[
         OutputKind,
-        Field(description="stdout or stderr: what the program printed. log: HTCondor's event "
-              "log for the job (submitted, started where, held, evicted, exit code)."),
+        Field(
+            description="stdout or stderr: what the program printed. log: HTCondor's event "
+            "log for the job (submitted, started where, held, evicted, exit code)."
+        ),
     ] = "stdout",
     tail_lines: Annotated[int, Field(ge=1, le=500, description="How many lines from the end.")] = 50,
 ) -> dict[str, Any]:
@@ -287,7 +279,10 @@ def job_output(
         )
     attr, command = classads.OUTPUT_FILES[which]
     out: dict[str, Any] = {
-        "job_id": classads.job_id(ad), "status": classads.status_name(ad), "in_queue": in_queue, "which": which,
+        "job_id": classads.job_id(ad),
+        "status": classads.status_name(ad),
+        "in_queue": in_queue,
+        "which": which,
     }
     pool.tag_schedd(out, schedd)
     if warnings:
@@ -342,9 +337,7 @@ def pool_status(
     one claimed slot per running job. Which slots count is set by the server's
     slot filter."""
     log.info("pool_status detail=%s", detail)
-    projection = classads.SLOT_PROJECTION + [
-        a for a in settings.slot_attrs if a not in classads.SLOT_PROJECTION
-    ]
+    projection = classads.SLOT_PROJECTION + [a for a in settings.slot_attrs if a not in classads.SLOT_PROJECTION]
     ads = pool.query_slots(projection)
     if not ads:
         raise ToolError(_no_slots())
@@ -404,15 +397,34 @@ def pool_status(
 @mcp.tool(annotations=READ_ONLY, tags={"jobs", "read-only"})
 def draft_submit(
     executable: Annotated[str, Field(description="Program or script to run.")],
-    arguments: Annotated[str, Field(description="Its command-line arguments. $(item) is the queue item, $(ProcId) the job number.")] = "",
-    input_files: Annotated[list[str] | None, Field(description="Files to copy to the execute machine before the job starts. $(item) stands for the queue item.")] = None,
-    output_files: Annotated[list[str] | None, Field(description="Files or directories to copy back when the job ends. Empty means every new file in the job's scratch directory.")] = None,
+    arguments: Annotated[
+        str, Field(description="Its command-line arguments. $(item) is the queue item, $(ProcId) the job number.")
+    ] = "",
+    input_files: Annotated[
+        list[str] | None,
+        Field(
+            description="Files to copy to the execute machine before the job starts. $(item) stands for the queue item."
+        ),
+    ] = None,
+    output_files: Annotated[
+        list[str] | None,
+        Field(
+            description="Files or directories to copy back when the job ends. Empty means every new file in the job's scratch directory."
+        ),
+    ] = None,
     cpus: Annotated[int, Field(ge=1)] = 1,
     memory_mb: Annotated[int, Field(ge=1)] = 1024,
     disk_mb: Annotated[int | None, Field(ge=1, description="Scratch disk. Omit to let HTCondor estimate it.")] = None,
     gpus: Annotated[int, Field(ge=0)] = 0,
-    queue: Annotated[int | list[str], Field(description="How many copies to queue, or a list of items to queue one job each for.")] = 1,
-    extra: Annotated[dict[str, str] | None, Field(description="Other submit commands, verbatim, such as {\"requirements\": \"HasAVX2\", \"+WantCloudBurst\": \"\\\"orangegrid-2026\\\"\"}. They come last and override the generated commands.")] = None,
+    queue: Annotated[
+        int | list[str], Field(description="How many copies to queue, or a list of items to queue one job each for.")
+    ] = 1,
+    extra: Annotated[
+        dict[str, str] | None,
+        Field(
+            description='Other submit commands, verbatim, such as {"requirements": "HasAVX2", "+WantCloudBurst": "\\"orangegrid-2026\\""}. They come last and override the generated commands.'
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """Turn a structured job description into an HTCondor submit file and check
     it without queuing anything: the text is parsed, run through condor_submit's
@@ -429,9 +441,17 @@ def draft_submit(
     executable = submit.resolve(executable, workdir)
     input_files = [submit.resolve(f, workdir) for f in input_files or []]
     text = submit.compose(
-        executable=executable, arguments=arguments, input_files=input_files,
-        output_files=output_files or [], cpus=cpus, memory_mb=memory_mb, disk_mb=disk_mb,
-        gpus=gpus, queue=queue, extra=extra or {}, workdir=workdir,
+        executable=executable,
+        arguments=arguments,
+        input_files=input_files,
+        output_files=output_files or [],
+        cpus=cpus,
+        memory_mb=memory_mb,
+        disk_mb=disk_mb,
+        gpus=gpus,
+        queue=queue,
+        extra=extra or {},
+        workdir=workdir,
     )
     if reason := submit.runs_commands(text):
         raise ToolError(f"The draft is not accepted: {reason}")
@@ -483,8 +503,18 @@ def draft_submit(
 
 @mcp.tool(annotations=WRITE, tags={"jobs", "write"})
 def submit_job(
-    submit_text: Annotated[str | None, Field(description="A complete submit description, such as the submit_text from draft_submit once the user has approved it.")] = None,
-    submit_file: Annotated[str | None, Field(description="Instead of text: the path of a submit file on the submit host. Its relative paths are taken relative to its own directory.")] = None,
+    submit_text: Annotated[
+        str | None,
+        Field(
+            description="A complete submit description, such as the submit_text from draft_submit once the user has approved it."
+        ),
+    ] = None,
+    submit_file: Annotated[
+        str | None,
+        Field(
+            description="Instead of text: the path of a submit file on the submit host. Its relative paths are taken relative to its own directory."
+        ),
+    ] = None,
     dry_run: Annotated[bool, Field(description="Queue nothing; return the job ads HTCondor would create.")] = False,
 ) -> dict[str, Any]:
     """Queue jobs from a submit description, given as text or as the path of a
@@ -559,7 +589,8 @@ DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
 ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
 RemoveProcField = Field(
-    ge=0, description="Process number within the cluster. Give this, or all_procs=True, never both.",
+    ge=0,
+    description="Process number within the cluster. Give this, or all_procs=True, never both.",
 )
 AllProcsField = Field(description="Remove every job in the cluster. Only valid without proc_id.")
 
@@ -597,7 +628,10 @@ def _act(
     if not found and missing_ok:
         log.info("  -> nothing to %s", verb)
         return {
-            "action": verb, "reason": reason, "changed": 0, "jobs": [],
+            "action": verb,
+            "reason": reason,
+            "changed": 0,
+            "jobs": [],
             "note": f"Nothing to {verb}: {label} is not in the queue. It may already have been "
             "removed or finished, or the ID may be wrong.",
         }
@@ -642,10 +676,7 @@ def _act(
             f"The schedd ({name}) denied permission to {verb} {label}. The server runs as "
             f"{getpass.getuser()}; only the job's owner or a queue superuser can change it."
         )
-    after = {
-        classads.job_id(ad): ad
-        for ad in pool.query_schedd(name, schedd, constraint, _ACT_PROJECTION)
-    }
+    after = {classads.job_id(ad): ad for ad in pool.query_schedd(name, schedd, constraint, _ACT_PROJECTION)}
     # Only a remove can take credit for a job that is gone
     gone = "removed" if action == htcondor.JobAction.Remove else "left the queue"
     rows = []

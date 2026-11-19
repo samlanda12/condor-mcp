@@ -21,7 +21,11 @@ pytestmark = pytest.mark.anyio
 
 async def test_draft_sleep_job():
     out = await call(
-        "draft_submit", executable="/bin/sleep", arguments="30", memory_mb=64, disk_mb=10,
+        "draft_submit",
+        executable="/bin/sleep",
+        arguments="30",
+        memory_mb=64,
+        disk_mb=10,
         extra={"+CondorMcpTest": "true"},
     )
     text = out["submit_text"]
@@ -53,7 +57,10 @@ async def test_draft_queue_over_items_checks_each_input(tmp_path):
     present = tmp_path / "a.csv"
     present.write_text("1\n")
     out = await call(
-        "draft_submit", executable="/bin/cat", arguments="$(item)", input_files=["$(item)"],
+        "draft_submit",
+        executable="/bin/cat",
+        arguments="$(item)",
+        input_files=["$(item)"],
         queue=[str(present), "missing.csv"],
     )
     text = out["submit_text"]
@@ -85,7 +92,9 @@ async def test_draft_missing_executable():
 
 async def test_draft_typo_in_extra():
     out = await call(
-        "draft_submit", executable="/bin/sleep", extra={"transfer_input_file": "/etc/hostname"},
+        "draft_submit",
+        executable="/bin/sleep",
+        extra={"transfer_input_file": "/etc/hostname"},
     )
     assert out["submittable"] is True
     assert len(out["warnings"]) == 1
@@ -94,7 +103,10 @@ async def test_draft_typo_in_extra():
 
 async def test_draft_impossible_request():
     out = await call(
-        "draft_submit", executable="/bin/sleep", gpus=1, memory_mb=64,
+        "draft_submit",
+        executable="/bin/sleep",
+        gpus=1,
+        memory_mb=64,
         extra={"request_memory": "1000000000"},
     )
     assert "request_gpus            = 1" in out["submit_text"]
