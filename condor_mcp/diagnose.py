@@ -211,16 +211,16 @@ def reasons(
         )
         if priority and priority.get("rank", 1) > 1:
             line += (
-                f" Its user ranks {priority['rank']} of {users_competing} users with jobs waiting or "
-                "running, and the ones ahead are offered free slots first."
+                f" Its user ranks {priority['rank']} of {users_competing} users with idle jobs, "
+                "and the ones ahead are offered free slots first."
             )
         out.append(line)
     else:
         line = f"{_slots(matched['free_now'])} could start the job now."
         if priority and priority.get("rank", 1) > 1:
             line += (
-                f" Users ahead of its user in the fair-share order ({priority['rank'] - 1} of them) "
-                "may take them first."
+                f" {priority['rank'] - 1} {'user' if priority['rank'] == 2 else 'users'} with idle jobs "
+                "and a better fair-share priority may take them first."
             )
         else:
             line += " It should start at one of the negotiator's next cycles."

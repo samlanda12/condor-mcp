@@ -7,7 +7,7 @@ import getpass
 import pytest
 from fastmcp.exceptions import ToolError
 
-from conftest import call
+from conftest import call, fake_priorities
 
 pytestmark = pytest.mark.anyio
 ME = getpass.getuser()
@@ -104,63 +104,68 @@ def test_missing_negotiator_does_not_fall_back_to_local_config(monkeypatch):
         pool.locate_negotiator()
 
 
-async def test_rank_counts_only_competing_users_ahead(monkeypatch):
-    """Faked records: rank counts users with idle or running jobs and a better priority,
-    group records are left out, and a user's accounting-group records are theirs."""
-    import classad2 as classad
-
-    from condor_mcp import pool
-
-    def record(name, priority, group=False):
-        return classad.ClassAd(
-            {
-                "Name": name,
-                "Priority": priority,
-                "PriorityFactor": 1000.0,
-                "IsAccountingGroup": group,
-                "WeightedAccumulatedUsage": 7200.0,
-            }
-        )
-
-    def submitter(name, idle=0, running=0, held=0):
-        return classad.ClassAd({"Name": name, "IdleJobs": idle, "RunningJobs": running, "HeldJobs": held})
-
-    monkeypatch.setattr(
-        pool,
-        "accountant_ads",
-        lambda: pool.Priorities(
-            [
-                record("alice@d", 900.0),
-                record("group_x.alice@d", 300.0),
-                record("bob@d", 200.0),
-                record("carol@d", 100.0),
-                record("dave@d", 50.0),
-                record("<none>", 1.0, group=True),
-            ],
-            0.0,
-            None,
-        ),
-    )
-    monkeypatch.setattr(
-        pool,
-        "query_submitters",
-        lambda: [
-            submitter("alice@d", idle=5),
-            submitter("bob@d", running=2),
-            submitter("bob@d", idle=1),  # a second schedd
-            submitter("carol@d", held=3),  # held only, so not competing
-            submitter("erin@d", idle=1),  # no record yet
+async def test_rank_counts_only_users_waiting_ahead(monkeypatch):
+    """Rank counts users with idle jobs and a better priority, a user with no record
+    counts as the best, group records are left out, and a user's accounting-group
+    records are theirs only when their queued jobs run under that group."""
+    fake_priorities(
+        monkeypatch,
+        records=[
+            ("alice@d", 900.0),
+            ("group_x.alice@d", 300.0),
+            ("group_y.alice@d", 100.0),  # no queued jobs under it: not shown
+            ("bob@d", 200.0),
+            ("carol@d", 100.0),
+            ("dave@d", 50.0),
+            ("frank@d", 10.0),
+            ("<none>", 1.0, True),
         ],
+        submitters=[
+            ("alice@d", 5),
+            ("group_x.alice@d", 0, 1),
+            ("bob@d", 0, 2),
+            ("bob@d", 1),  # a second schedd
+            ("carol@d", 0, 0, 3),  # held only, so not waiting
+            ("frank@d", 0, 4),  # running only, so not waiting
+            ("erin@d", 1),  # no record yet
+        ],
+        group_jobs=[("alice@d", "group_x.alice")],
     )
 
     out = await call("user_priority", owner="alice")
     assert out["users_competing"] == 3
-    assert [(row["user"], row["rank"]) for row in out["users"]] == [("group_x.alice@d", 2), ("alice@d", 2)]
+    assert [(row["user"], row["rank"]) for row in out["users"]] == [("group_x.alice@d", 3), ("alice@d", 3)]
     assert out["users"][1]["usage_hours"] == 2.0
 
     out = await call("user_priority", owner="all")
     users = {row["user"]: row for row in out["users"]}
-    assert list(users) == ["carol@d", "bob@d", "alice@d", "erin@d"]  # dave has no jobs queued
+    assert list(users) == ["erin@d", "frank@d", "carol@d", "bob@d", "group_x.alice@d", "alice@d"]
     assert users["bob@d"]["jobs"] == {"idle": 1, "running": 2, "held": 0}
-    assert users["bob@d"]["rank"] == 1
-    assert "rank" not in users["erin@d"] and "no usage record" in users["erin@d"]["note"]
+    assert users["bob@d"]["rank"] == 2  # behind erin, who has no record
+    assert users["erin@d"]["rank"] == 1 and "no usage record" in users["erin@d"]["note"]
+
+
+async def test_dotted_username_is_another_user(monkeypatch):
+    """john.smith@d is not smith's accounting-group record, however it looks."""
+    fake_priorities(
+        monkeypatch,
+        records=[("smith@d", 500.0), ("john.smith@d", 100.0), ("group_a.smith@d", 200.0)],
+        submitters=[("smith@d", 1), ("john.smith@d", 4), ("group_a.smith@d", 1)],
+        group_jobs=[("smith@d", "group_a.smith")],
+    )
+    out = await call("user_priority", owner="smith")
+    assert sorted(row["user"] for row in out["users"]) == ["group_a.smith@d", "smith@d"]
+
+
+async def test_unreadable_queue_keeps_the_plain_record(monkeypatch):
+    from condor_mcp import pool
+
+    fake_priorities(monkeypatch, records=[("smith@d", 500.0), ("group_a.smith@d", 200.0)], submitters=[])
+
+    def fail(constraint, projection):
+        raise ToolError("schedd (local): no answer")
+
+    monkeypatch.setattr(pool, "query_jobs", fail)
+    out = await call("user_priority", owner="smith")
+    assert [row["user"] for row in out["users"]] == ["smith@d"]
+    assert "accounting groups" in out["warnings"][0]

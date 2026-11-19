@@ -402,17 +402,22 @@ def pool_status(
     return out
 
 
-def _is_user(submitter: str, name: str) -> bool:
-    """Whether a submitter or accountant name, such as alice@domain or, under an accounting
-    group, group_physics.alice@domain, is the user name."""
-    local = submitter.rsplit("@", 1)[0]
-    return local == name or local.endswith(f".{name}")
+def _group_submitters(constraint: str) -> tuple[set[str], list[str]]:
+    """The accounting-group submitter names, such as group_physics.alice@domain, that the
+    owner's queued jobs run under, and why any schedd could not be read. The name alone
+    cannot tell a group prefix from a dotted username (john.alice), and without GROUP_NAMES
+    the negotiator does not record the group, so the jobs are the only reliable source."""
+    try:
+        found, failed = pool.query_jobs(f"({constraint}) && AccountingGroup =!= undefined", ["User", "AccountingGroup"])
+    except ToolError as exc:
+        return set(), [f"Could not read the queues for the user's accounting groups: {exc}"]
+    return {name for _, ad in found if (name := _submitter(ad))}, list(failed.values())
 
 
 class _PriorityTable(NamedTuple):
     records: dict[str, classad.ClassAd]  # accountant ad by submitter name
     jobs: dict[str, Counter[str]]  # idle, running and held jobs by submitter name
-    competing: set[str]  # submitters with idle or running jobs
+    competing: set[str]  # submitters with idle jobs, the ones waiting for slots
     read_at: float
     warning: str | None  # the negotiator did not answer, so the records are older
 
@@ -426,23 +431,22 @@ def _priority_table() -> _PriorityTable:
         counts = jobs.setdefault(get(ad, "Name"), Counter())
         for key, attr in (("idle", "IdleJobs"), ("running", "RunningJobs"), ("held", "HeldJobs")):
             counts[key] += int(get(ad, attr, 0) or 0)
-    competing = {user for user, counts in jobs.items() if counts["idle"] or counts["running"]}
+    competing = {user for user, counts in jobs.items() if counts["idle"]}
     return _PriorityTable(records, jobs, competing, read_at, warning)
 
 
 def _priority_row(user: str, table: _PriorityTable) -> dict[str, Any]:
-    """One user_priority row, with the user's rank among the competing submitters."""
+    """One user_priority row, with the user's place in line: 1 plus the users with idle
+    jobs and a better priority. A user with no record yet has the best priority."""
 
-    def priority(name: str) -> float | None:
-        return float(get(table.records[name], "Priority", 0)) if name in table.records else None
+    def priority(name: str) -> float:
+        return float(get(table.records[name], "Priority", 0)) if name in table.records else float("-inf")
 
     row: dict[str, Any] = classads.priority_row(table.records[user]) if user in table.records else {"user": user}
-    mine = priority(user)
-    if mine is None:
+    if user not in table.records:
         row["note"] = "The negotiator has no usage record yet, so this user starts at the best priority."
-    else:
-        ahead = [u for u in table.competing if u != user and (p := priority(u)) is not None and p < mine]
-        row["rank"] = len(ahead) + 1
+    mine = priority(user)
+    row["rank"] = 1 + sum(1 for u in table.competing if u != user and priority(u) < mine)
     row["jobs"] = {key: table.jobs.get(user, Counter())[key] for key in ("idle", "running", "held")}
     return row
 
@@ -457,21 +461,26 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     Each row has the effective priority, the real priority and factor it is the product
     of, CPUs in use now and total usage hours (both weighted, by CPUs unless the pool
     weights slots otherwise), the user's idle, running and held jobs, and their rank
-    among the users with idle or running jobs now (1 is offered slots first). A user
-    who submits under accounting groups has one row per group. 'all' lists the users
-    with jobs in a queue now. Job counts come from the schedds' submitter ads, which can
-    trail the queue by a few minutes. The negotiator's answer is reused for up to five
-    minutes; as_of says when it was read. When the negotiator does not answer, the last
-    answer is returned with a warning."""
+    among the users with idle jobs now (1 is offered slots first; for a user with no
+    idle jobs, where their next one would be). A user with no usage record yet counts as
+    the best priority. A user who submits under accounting groups has one row per group
+    they have jobs queued in. 'all' lists the users with jobs in a queue now. Job counts
+    come from the schedds' submitter ads, which can trail the queue by a few minutes.
+    The negotiator's answer is reused for up to five minutes; as_of says when it was
+    read. When the negotiator does not answer, the last answer is returned with a
+    warning."""
     log.info("user_priority owner=%s", owner)
-    _, name = pool.owner_constraint(owner)
+    constraint, name = pool.owner_constraint(owner)
     table = _priority_table()
+    warnings = [table.warning] if table.warning else []
     if name is None:
         users = [user for user, counts in table.jobs.items() if sum(counts.values())]
     else:
-        users = [user for user in {*table.records, *table.jobs} if _is_user(user, name)]
+        groups, failed = _group_submitters(constraint)
+        warnings += failed
+        users = [user for user in {*table.records, *table.jobs} if user.rsplit("@", 1)[0] == name or user in groups]
     rows = [_priority_row(user, table) for user in users]
-    rows.sort(key=lambda row: (row.get("effective_priority") is None, row.get("effective_priority", 0)))
+    rows.sort(key=lambda row: row.get("effective_priority", float("-inf")))
 
     out: dict[str, Any] = {
         "as_of": classads.ts(table.read_at),
@@ -485,8 +494,8 @@ def user_priority(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
             else f"The negotiator has no record of {name} and they have no jobs in a queue. "
             "A user's first jobs start at the best priority."
         )
-    if table.warning:
-        out["warnings"] = [table.warning]
+    if warnings:
+        out["warnings"] = warnings
     log.info("  -> %d rows, %d users competing", len(rows), len(table.competing))
     return out
 
@@ -558,7 +567,8 @@ def why_idle(
     try:
         table = _priority_table()
         if submitter:
-            priority, competing = _priority_row(submitter, table), len(table.competing)
+            # The job is idle, so its user is waiting even before their submitter ad says so
+            priority, competing = _priority_row(submitter, table), len(table.competing | {submitter})
         if table.warning:
             warnings.append(table.warning)
     except ToolError as exc:

@@ -11,7 +11,7 @@ import htcondor2 as htcondor
 import pytest
 
 from condor_mcp import diagnose
-from conftest import TAG, call
+from conftest import TAG, call, fake_priorities
 
 pytestmark = pytest.mark.anyio
 
@@ -51,6 +51,28 @@ async def test_why_idle_asks_for_more_than_any_slot(unmatchable):
     assert out["largest"]["cpus"]["requested"] == 999
     assert out["reasons"][0].startswith("The job asks for more than any slot has: 999 CPUs")
     assert any(c["clause"] == "TARGET.Cpus >= 999" and c["rules_out"] for c in out["requirements"])
+
+
+async def test_why_idle_counts_its_user_as_waiting(monkeypatch, unmatchable):
+    """A just-submitted job's user has no submitter ad yet but is waiting, so the rank
+    sentence counts them among the users with idle jobs: never "ranks 4 of 3"."""
+    from condor_mcp import pool
+
+    [job] = htcondor.Schedd().query(f"ClusterId == {unmatchable['big']}", ["User"])
+    fake_priorities(
+        monkeypatch,
+        records=[(job["User"], 900.0), ("a@d", 1.0), ("b@d", 2.0), ("c@d", 3.0)],
+        submitters=[("a@d", 1), ("b@d", 1), ("c@d", 1)],
+    )
+    [real] = pool.query_slots([], "DynamicSlot =!= true")[:1]
+    busy = classad.ClassAd()
+    busy.update(real)
+    busy.update({"PartitionableSlot": False, "State": "Claimed", "Cpus": 999, "TotalSlotCpus": 999})
+    monkeypatch.setattr(pool, "query_slots", lambda projection, constraint=None: [busy])
+
+    out = await call("why_idle", cluster_id=unmatchable["big"])
+    assert out["priority"]["rank"] == 4
+    assert "ranks 4 of 4 users with idle jobs" in out["reasons"][0], out["reasons"]
 
 
 async def test_why_idle_held_job(live_jobs):
@@ -143,14 +165,14 @@ def test_free_now_and_users_ahead():
         "1 slot could start the job now. It should start at one of the negotiator's next cycles."
     ]
     ahead = diagnose.reasons(matched, priority={"rank": 3}, users_competing=5)
-    assert "(2 of them) may take them first" in ahead[0]
+    assert "2 users with idle jobs and a better fair-share priority may take them first" in ahead[0]
 
 
 def test_busy_static_slot_and_rank():
     busy = slot("cpu1", 8, 16000, gpus=1, partitionable=False, state="Claimed")
     matched = diagnose.match(gpu_job(), [busy])
     assert (matched["accept_the_job"], matched["free_now"]) == (1, 0)
-    assert "ranks 3 of 5 users" in diagnose.reasons(matched, priority={"rank": 3}, users_competing=5)[0]
+    assert "ranks 3 of 5 users with idle jobs" in diagnose.reasons(matched, priority={"rank": 3}, users_competing=5)[0]
 
 
 def test_start_policy_refuses():

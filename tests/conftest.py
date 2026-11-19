@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import classad2 as classad
 import htcondor2 as htcondor
 import pytest
 
@@ -36,6 +37,34 @@ async def call(name: str, **args: Any) -> Any:
 
     async with Client(mcp) as client:
         return (await client.call_tool(name, args)).data
+
+
+def fake_priorities(monkeypatch, records, submitters, group_jobs=None):
+    """Fake the negotiator's records (name, priority[, is_group]) and the submitter ads
+    (name, idle, running, held). group_jobs, (User, AccountingGroup) pairs, also fakes the
+    job queues, which leaves the real queues to tools that need them when it is None."""
+    from condor_mcp import pool
+
+    def record(name, priority, group=False):
+        return classad.ClassAd(
+            {
+                "Name": name,
+                "Priority": priority,
+                "PriorityFactor": 1000.0,
+                "IsAccountingGroup": group,
+                "WeightedAccumulatedUsage": 7200.0,
+            }
+        )
+
+    def submitter(name, idle=0, running=0, held=0):
+        return classad.ClassAd({"Name": name, "IdleJobs": idle, "RunningJobs": running, "HeldJobs": held})
+
+    ads = [record(*r) for r in records]
+    monkeypatch.setattr(pool, "accountant_ads", lambda: pool.Priorities(ads, 0.0, None))
+    monkeypatch.setattr(pool, "query_submitters", lambda: [submitter(*s) for s in submitters])
+    if group_jobs is not None:
+        jobs = [("local", classad.ClassAd({"User": user, "AccountingGroup": group})) for user, group in group_jobs]
+        monkeypatch.setattr(pool, "query_jobs", lambda constraint, projection: (jobs, {}))
 
 
 @pytest.fixture(autouse=True)
