@@ -60,3 +60,21 @@ jobs:
 
             - name: run mypy
               run: uv run --locked mypy condor_mcp tests
+
+    lint:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: checkout the repo
+              uses: actions/checkout@v5
+
+            - name: install uv
+              uses: astral-sh/setup-uv@v10.3.3
+
+            # Annotates the PR diff with each finding
+            - name: run ruff check
+              run: uv run --locked ruff check --output-format github
+
+            - name: run ruff format
+              if: ${{ !cancelled() }}
+              run: uv run --locked ruff format --check
