@@ -320,6 +320,45 @@ def finished_job(ad: classad.ClassAd) -> dict[str, Any]:
     return {**row, **job_ending(ad)}
 
 
+def priority_row(ad: classad.ClassAd) -> dict[str, Any]:
+    """One user's record from the negotiator's accountant. Priority is the effective
+    priority, the real priority times the factor. Usage is weighted by SLOT_WEIGHT, which
+    is CPUs unless the pool sets otherwise; the unweighted counts are not reliable."""
+    priority = float(get(ad, "Priority", 0))
+    factor = float(get(ad, "PriorityFactor", 0))
+    return {
+        "user": get(ad, "Name"),
+        "effective_priority": round(priority, 2),
+        "real_priority": round(priority / factor, 3) if factor else None,
+        "priority_factor": factor,
+        "in_use": get(ad, "WeightedResourcesUsed", 0),
+        "usage_hours": round(float(get(ad, "WeightedAccumulatedUsage", 0)) / 3600, 2),
+    }
+
+
+# RecentDaemonCoreDutyCycle, the share of the last few minutes the schedd spent busy, at
+# which its load gets each name. Past 0.95 it is saturated: slow to start jobs and to answer.
+SCHEDD_LOAD = [(0.95, "overloaded"), (0.80, "strained"), (0.50, "busy"), (0.0, "ok")]
+
+
+def schedd_health(name: str, ad: classad.ClassAd | None) -> dict[str, Any]:
+    """One schedd's load and job counts from its collector ad. Uses the recent duty cycle,
+    not the lifetime DaemonCoreDutyCycle, which hides a schedd that is busy now."""
+    if ad is None:
+        return {"name": name, "note": "The collector has no ad for this schedd, so it may be down."}
+    row: dict[str, Any] = {"name": name}
+    duty = get(ad, "RecentDaemonCoreDutyCycle")
+    if duty is not None:
+        row["duty_cycle"] = round(float(duty), 3)
+        row["load"] = next(label for floor, label in SCHEDD_LOAD if duty >= floor)
+    running, cap = get(ad, "TotalRunningJobs"), get(ad, "MaxJobsRunning")
+    row["jobs"] = {"running": running, "idle": get(ad, "TotalIdleJobs"), "held": get(ad, "TotalHeldJobs")}
+    row["max_running"] = cap
+    if running is not None and cap is not None and running >= cap:
+        row["note"] = "At its MaxJobsRunning cap: no more of its jobs start until running ones end."
+    return row
+
+
 def summarize_slot(ad: classad.ClassAd, extra_attrs: Iterable[str] = ()) -> dict[str, Any]:
     """One row of the per-slot pool listing."""
     row = {
