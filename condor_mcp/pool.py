@@ -310,6 +310,13 @@ SCHEDD_PROJECTION = [
     "TotalRunningJobs",
     "TotalIdleJobs",
     "TotalHeldJobs",
+    # What scheduler- and local-universe jobs wait on, for why_idle
+    "StartSchedulerUniverse",
+    "TotalSchedulerJobsRunning",
+    "MaxRunningSchedulerJobsPerOwner",
+    "StartLocalUniverse",
+    "TotalLocalJobsRunning",
+    "MaxRunningLocalJobsPerOwner",
 ]
 
 

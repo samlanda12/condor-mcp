@@ -143,6 +143,113 @@ def test_split_clauses():
     ]
     assert diagnose.split_clauses("((a) && (b))") == ["a", "b"]
     assert diagnose.split_clauses("(a) || (b)") == ["(a) || (b)"]
+    assert diagnose.split_clauses(r'a == "x\" && (" && b') == [r'a == "x\" && ("', "b"]
+
+
+@pytest.mark.parametrize(
+    "expr, clauses",
+    [
+        ("a || b && c", ["a || b && c"]),  # a || (b && c): no && term holds on its own
+        ("a && b || c", ["a && b || c"]),
+        ("a ? b && c : d", ["a ? b && c : d"]),
+        ("a =?= b && c =!= d", ["a =?= b", "c =!= d"]),  # =?= is not ?:
+        (
+            '(TARGET.GPUs_DeviceName == "Tesla (16GB") && (TARGET.Cpus >= 1)',
+            ['TARGET.GPUs_DeviceName == "Tesla (16GB"', "TARGET.Cpus >= 1"],
+        ),
+        ('("a)" == b)', ['"a)" == b']),
+    ],
+)
+def test_split_respects_precedence_and_quotes(expr, clauses):
+    assert diagnose.split_clauses(expr) == clauses
+
+
+def test_match_with_a_parenthesis_in_a_string():
+    """A ( inside a quoted string once crashed why_idle with a ClassAd parse error."""
+    job = gpu_job()
+    job["Requirements"] = classad.ExprTree('(TARGET.Arch == "X86_64 (64-bit") && (TARGET.Cpus >= 1)')
+    matched = diagnose.match(job, [slot("cpu1", 8, 16000)])
+    assert [c["clause"] for c in matched["requirements"]] == ['TARGET.Arch == "X86_64 (64-bit"', "TARGET.Cpus >= 1"]
+    assert matched["requirements"][0]["rules_out"] == 1 and matched["requirements"][1]["rules_out"] == 0
+
+
+def test_an_or_keeps_requirements_whole():
+    """A slot with HasSpecial meets a || b && c, so b && c's parts must not be blamed."""
+    job = gpu_job()
+    job["Requirements"] = classad.ExprTree('TARGET.HasSpecial || TARGET.Arch == "X86_64" && TARGET.Cpus >= 64')
+    special = slot("cpu1", 8, 16000)
+    special["HasSpecial"] = True
+    matched = diagnose.match(job, [special])
+    assert matched["meet_requirements"] == 1 and len(matched["requirements"]) == 1
+
+
+def test_claimed_partitionable_slot_is_not_free():
+    """A claimed partitionable slot's leftovers belong to the schedd that claimed it."""
+    matched = diagnose.match(gpu_job(), [slot("gpu1", 8, 16000, gpus=1, state="Claimed")])
+    assert (matched["accept_the_job"], matched["free_now"], matched["stranded_gpus"]) == (1, 0, {})
+
+
+def test_job_without_requirements():
+    job = gpu_job()
+    del job["Requirements"]
+    matched = diagnose.match(job, [slot("gpu1", 8, 16000, gpus=1)])
+    assert diagnose.reasons(matched) == ["The job has no Requirements expression, so no slot can match it."]
+
+
+def test_one_cpu_too_many():
+    job = gpu_job()
+    job["RequestCpus"], job["RequestGPUs"] = 1, 0
+    matched = diagnose.match(job, [slot("tiny", 0, 16000, partitionable=False)])
+    assert diagnose.reasons(matched)[0].startswith("The job asks for more than any slot has: 1 CPU, but")
+
+
+def test_one_stranded_gpu():
+    matched = diagnose.match(gpu_job(), [slot("gpu1", 1, 2000, gpus=1, totals=(32, 64000, 4))])
+    assert diagnose.reasons(matched)[1].startswith("1 GPU that fits the job is free on 1 machine")
+
+
+def _schedd_ad(**attrs):
+    ad = classad.ClassAd({"TotalSchedulerJobsRunning": 3, "MaxRunningSchedulerJobsPerOwner": 200})
+    ad["StartSchedulerUniverse"] = classad.ExprTree(attrs.pop("start", "TotalSchedulerJobsRunning < 500"))
+    ad.update(attrs)
+    return ad
+
+
+def test_universe_reasons():
+    def job(universe, **attrs):
+        return classad.ClassAd({"JobUniverse": universe, **attrs})
+
+    assert diagnose.universe_reasons(job(5), _schedd_ad()) is None
+    dagman = diagnose.universe_reasons(job(7), _schedd_ad())
+    assert "scheduler-universe job (DAGMan runs this way)" in dagman[0]
+    assert "cap of 200 running scheduler-universe jobs" in dagman[-1]
+    closed = diagnose.universe_reasons(job(7), _schedd_ad(start="TotalSchedulerJobsRunning < 3"))
+    assert "START_SCHEDULER_UNIVERSE policy (TotalSchedulerJobsRunning < 3) is false now" in closed[-1]
+    assert "could not be read" in diagnose.universe_reasons(job(12), None)[-1]
+    grid = diagnose.universe_reasons(job(9, GridResource="batch slurm"), None)
+    assert "remote system batch slurm" in grid[0] and "no GridJobStatus" in grid[1]
+    assert "reports it as IDLE" in diagnose.universe_reasons(job(9, GridJobStatus="IDLE"), None)[1]
+
+
+async def test_why_idle_scheduler_universe():
+    """A scheduler-universe job whose Requirements are false stays idle on the schedd."""
+    schedd = htcondor.Schedd()
+    submit = {
+        f"+{TAG}": "true",
+        "universe": "scheduler",
+        "executable": "/bin/sleep",
+        "arguments": "60",
+        "requirements": "False",
+    }
+    cluster = schedd.submit(htcondor.Submit(submit)).cluster()
+    try:
+        out = await call("why_idle", cluster_id=cluster)
+    finally:
+        schedd.act(htcondor.JobAction.Remove, f"ClusterId == {cluster}")
+    assert out["status"] == "idle" and "slots_considered" not in out and "priority" not in out
+    assert "scheduler-universe job" in out["reasons"][0]
+    assert out["reasons"][1] == "Its Requirements are always false, so the schedd will never start it."
+    assert "cap of 200" in out["reasons"][2]
 
 
 def test_stranded_gpus():

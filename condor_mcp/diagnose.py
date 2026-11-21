@@ -9,6 +9,7 @@ belong to the partitionable slot they came from and to the job that claimed them
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import classad2 as classad
@@ -24,29 +25,44 @@ RESOURCES = [
 ]
 
 
-def split_clauses(expr: str) -> list[str]:
-    """The top-level && terms of an expression, outer parentheses removed. Quotes and
-    nested parentheses are respected, so a || inside a term stays in that term."""
-    expr = _strip_parens(expr.strip())
-    clauses, depth, start, i, quote = [], 0, 0, 0, False
-    while i < len(expr):
-        ch = expr[i]
+def _unquoted(expr: str) -> Iterator[tuple[int, int]]:
+    """(index, depth) of each character outside string literals, where depth counts the
+    brackets open around it. A bracket gets the depth outside itself, so the parentheses
+    that wrap a whole expression are both at depth 0."""
+    depth, quote, escaped = 0, False, False
+    for i, ch in enumerate(expr):
         if quote:
-            if ch == "\\":
-                i += 1
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
             elif ch == '"':
                 quote = False
-        elif ch == '"':
+            continue
+        if ch == '"':
             quote = True
-        elif ch in "([{":
-            depth += 1
-        elif ch in ")]}":
+            continue
+        if ch in ")]}":
             depth -= 1
-        elif depth == 0 and expr.startswith("&&", i):
+        yield i, depth
+        if ch in "([{":
+            depth += 1
+
+
+def split_clauses(expr: str) -> list[str]:
+    """The top-level && terms of an expression, outer parentheses removed. Quotes and
+    nested parentheses are respected, so a || inside a term stays in that term. An
+    expression with a top-level || or ?: is one clause, since || and ?: bind looser than
+    &&: a || b && c is a || (b && c), not (a || b) and c."""
+    expr = _strip_parens(expr.strip())
+    top = [i for i, depth in _unquoted(expr) if depth == 0]
+    if any(expr.startswith("||", i) or (expr[i] == "?" and expr[i - 1 : i + 2] != "=?=") for i in top):
+        return [expr]
+    clauses, start = [], 0
+    for i in top:
+        if i >= start and expr.startswith("&&", i):
             clauses.append(expr[start:i])
             start = i + 2
-            i += 1
-        i += 1
     clauses.append(expr[start:])
     return [_strip_parens(c.strip()) for c in clauses if c.strip()]
 
@@ -54,12 +70,8 @@ def split_clauses(expr: str) -> list[str]:
 def _strip_parens(term: str) -> str:
     """term without parentheses that wrap all of it."""
     while term.startswith("(") and term.endswith(")"):
-        depth = 0
-        for i, ch in enumerate(term):  # quotes are rare enough here that a stray ( in one only costs the strip
-            depth += ch == "("
-            depth -= ch == ")"
-            if depth == 0 and i < len(term) - 1:
-                return term
+        if any(depth == 0 for i, depth in _unquoted(term) if 0 < i < len(term) - 1):
+            return term  # the first ( closes before the end, as in (a) && (b)
         term = term[1:-1].strip()
     return term
 
@@ -83,14 +95,15 @@ def full_size(slot: classad.ClassAd) -> classad.ClassAd:
 
 
 def free_now(slot: classad.ClassAd) -> bool:
-    """Whether the slot has resources no job holds: a partitionable slot's leftovers, or
-    an unclaimed static slot."""
-    return bool(get(slot, "PartitionableSlot", False)) or get(slot, "State") == "Unclaimed"
+    """Whether the slot has resources no job holds: an unclaimed static slot, or the
+    leftovers of an unclaimed partitionable slot. A claimed partitionable slot's leftovers
+    belong to the schedd that claimed them."""
+    return get(slot, "State") == "Unclaimed"
 
 
-def _with_requirements(job: classad.ClassAd, expr: str) -> classad.ClassAd:
+def _with_requirements(job: classad.ClassAd, expr: classad.ExprTree) -> classad.ClassAd:
     probe = _copy(job)
-    probe["Requirements"] = classad.ExprTree(expr)
+    probe["Requirements"] = expr
     return probe
 
 
@@ -106,11 +119,15 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
     requirements = job.lookup("Requirements") if "Requirements" in job else None
     clauses = []
     if requirements is not None:
-        for clause in split_clauses(str(requirements)):
-            probe = _with_requirements(job, clause)
+        try:
+            parts = [classad.ExprTree(clause) for clause in split_clauses(str(requirements))]
+        except classad.ClassAdException:  # a split the scanner got wrong: judge the whole
+            parts = [requirements]
+        for part in parts:
+            probe = _with_requirements(job, part)
             clauses.append(
                 {
-                    "clause": str(job.flatten(classad.ExprTree(clause))),
+                    "clause": str(job.flatten(part)),
                     "rules_out": sum(1 for slot in sized if not slot.matches(probe)),
                 }
             )
@@ -157,12 +174,82 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
     }
 
 
+# Universes whose jobs the negotiator never matches to slots: the schedd starts scheduler
+# (DAGMan) and local jobs on the submit host itself, and hands grid jobs to its gridmanager.
+SCHEDULER, GRID, LOCAL = 7, 9, 12
+# The schedd ad's policy expression and per-owner cap for each universe the schedd starts
+SCHEDD_STARTS = {
+    SCHEDULER: ("scheduler", "StartSchedulerUniverse", "MaxRunningSchedulerJobsPerOwner"),
+    LOCAL: ("local", "StartLocalUniverse", "MaxRunningLocalJobsPerOwner"),
+}
+
+
+def universe_reasons(job: classad.ClassAd, schedd: classad.ClassAd | None) -> list[str] | None:
+    """Why an idle job in a universe no slot runs has not started, or None for a job the
+    negotiator matches. schedd is the job's schedd ad, None if it could not be read."""
+    universe = get(job, "JobUniverse")
+    if universe == GRID:
+        resource, remote = get(job, "GridResource"), get(job, "GridJobStatus")
+        out = [
+            (
+                f"This is a grid-universe job, so it is never matched to a slot: the schedd's gridmanager "
+                f"submits it to the remote system {resource}, and slots and fair-share priority here do not "
+                "hold it back."
+            )
+        ]
+        if remote:
+            out.append(f"The remote system reports it as {remote}, so it is waiting there.")
+        else:
+            out.append("It has no GridJobStatus yet, so the gridmanager may not have submitted it.")
+        return out
+    if universe not in SCHEDD_STARTS:
+        return None
+    kind, policy, cap_attr = SCHEDD_STARTS[universe]
+    such_as = " (DAGMan runs this way)" if universe == SCHEDULER else ""
+    out = [
+        (
+            f"This is a {kind}-universe job{such_as}, so it is never matched to a slot: the schedd starts it "
+            "on the submit host itself, and slots and fair-share priority do not hold it back."
+        )
+    ]
+    requirements = job.lookup("Requirements") if "Requirements" in job else None
+    if requirements is not None and str(job.flatten(requirements)).lower() == "false":
+        out.append("Its Requirements are always false, so the schedd will never start it.")
+    elif requirements is not None:
+        out.append(
+            f"The schedd checks its Requirements ({job.flatten(requirements)}) against the schedd's own "
+            "ad, not a slot's."
+        )
+    if schedd is None or policy not in schedd:
+        out.append(
+            f"The schedd's START_{kind.upper()}_UNIVERSE policy and MAX_RUNNING_{kind.upper()}_JOBS_PER_OWNER "
+            "cap also decide when it starts; its ad could not be read."
+        )
+        return out
+    allowed, cap = get(schedd, policy), get(schedd, cap_attr)
+    if allowed is False:
+        out.append(
+            f"The schedd's START_{kind.upper()}_UNIVERSE policy ({schedd.lookup(policy)}) is false now, so "
+            f"it starts no {kind}-universe jobs until that changes."
+        )
+    elif cap is not None:
+        out.append(
+            f"The schedd's START_{kind.upper()}_UNIVERSE policy allows more now; the owner may be at its cap "
+            f"of {cap} running {kind}-universe jobs per owner."
+        )
+    return out
+
+
 def _slots(n: int) -> str:
     return f"{n} slot" if n == 1 else f"{n} slots"
 
 
-def _amount(value: Any) -> str:
-    return f"{round(float(value)):,}"
+def _amount(value: Any, unit: str = "") -> str:
+    """value rounded, with its unit in the singular for 1 CPU or 1 GPU."""
+    n = round(float(value))
+    if n == 1 and unit in ("CPUs", "GPUs"):
+        unit = unit[:-1]
+    return f"{n:,} {unit}".rstrip()
 
 
 def reasons(
@@ -176,7 +263,7 @@ def reasons(
     out = []
     n = matched["slots_considered"]
     too_big = [
-        f"{_amount(v['requested'])} {v['unit']}, but the largest slot has {_amount(v['largest_slot'])}"
+        f"{_amount(v['requested'], v['unit'])}, but the largest slot has {_amount(v['largest_slot'])}"
         for v in matched["largest"].values()
         if v["requested"] > v["largest_slot"]
     ]
@@ -198,7 +285,7 @@ def reasons(
                 f"the most is {clauses[0]['clause']} ({clauses[0]['rules_out']} of {_slots(n)})."
             )
         else:
-            out.append(f"None of the {_slots(n)} meets the job's requirements.")
+            out.append("The job has no Requirements expression, so no slot can match it.")
     elif matched["accept_the_job"] == 0:
         out.append(
             f"The job's requirements are met by {_slots(matched['meet_requirements'])}, but none of "
@@ -229,7 +316,8 @@ def reasons(
     if stranded:
         machines = len(stranded["machines"])
         out.append(
-            f"{stranded['gpus']} GPUs that fit the job are free on {machines} "
+            f"{_amount(stranded['gpus'], 'GPUs')} that {'fits' if stranded['gpus'] == 1 else 'fit'} the job "
+            f"{'is' if stranded['gpus'] == 1 else 'are'} free on {machines} "
             f"{'machine' if machines == 1 else 'machines'}, but with too few "
             f"{' and '.join(stranded['short_of'])} left to go with them."
         )

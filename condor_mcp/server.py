@@ -539,7 +539,10 @@ def why_idle(
     the largest slot; GPUs that fit but sit on machines with too few CPUs or too little
     memory left; whether the job's schedd is at its MaxJobsRunning cap or overloaded;
     and the job's user's place in the fair-share order, from user_priority. For a job
-    that is not idle it says what state the job is in instead."""
+    that is not idle it says what state the job is in instead. Scheduler-universe
+    (DAGMan), local-universe and grid-universe jobs never go to a slot, so for those it
+    gives only the reasons that apply: the schedd's policy for starting them on the
+    submit host, or the remote system a grid job waits on."""
     log.info("why_idle %d.%d", cluster_id, proc_id)
     found = _find_job(cluster_id, proc_id, [])  # the whole ad: a slot's START may read any attribute
     job = found.ad
@@ -550,18 +553,26 @@ def why_idle(
     if not found.in_queue or get(job, "JobStatus") != JobStatus.IDLE:
         return {**out, **_not_idle(job, found.in_queue)}
 
+    schedd_ad, schedd = None, None
+    try:
+        ads = pool.schedd_ads()
+        name, schedd_ad = (found.schedd, ads.get(found.schedd)) if settings.schedds else next(iter(ads.items()))
+        schedd = classads.schedd_health(name, schedd_ad)
+    except ToolError as exc:
+        warnings.append(str(exc))
+    out["idle_since"] = classads.ts(get(job, "EnteredCurrentStatus"))
+    unmatched = diagnose.universe_reasons(job, schedd_ad)
+    if unmatched is not None:  # slots and priority do not apply
+        out.update({"reasons": unmatched, "schedd_health": schedd})
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
     slots = pool.query_slots([], "DynamicSlot =!= true")
     if not slots:
         raise ToolError(_no_slots())
     matched = diagnose.match(job, slots)
 
-    schedd = None
-    try:
-        ads = pool.schedd_ads()
-        name, ad = (found.schedd, ads.get(found.schedd)) if settings.schedds else next(iter(ads.items()))
-        schedd = classads.schedd_health(name, ad)
-    except ToolError as exc:
-        warnings.append(str(exc))
     priority, competing = None, 0
     submitter = _submitter(job)
     try:
@@ -582,7 +593,6 @@ def why_idle(
         )
     out.update(
         {
-            "idle_since": classads.ts(get(job, "EnteredCurrentStatus")),
             "reasons": reasons,
             "slot_filter": settings.slot_constraint,
             **matched,
