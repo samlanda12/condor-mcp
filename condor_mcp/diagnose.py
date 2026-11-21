@@ -14,14 +14,15 @@ from typing import Any
 
 import classad2 as classad
 
+from condor_mcp import classads
 from condor_mcp.classads import get
 
-# Slot attribute, its full size on a partitionable slot, the job's request, and the unit
+# Slot attribute (as in classads.SLOT_RESOURCES), the job's request for it, and the unit
 RESOURCES = [
-    ("Cpus", "TotalSlotCpus", "RequestCpus", "CPUs"),
-    ("Memory", "TotalSlotMemory", "RequestMemory", "MB of memory"),
-    ("Disk", "TotalSlotDisk", "RequestDisk", "KB of disk"),
-    ("GPUs", "TotalSlotGPUs", "RequestGPUs", "GPUs"),
+    ("Cpus", "RequestCpus", "CPUs"),
+    ("Memory", "RequestMemory", "MB of memory"),
+    ("Disk", "RequestDisk", "KB of disk"),
+    ("GPUs", "RequestGPUs", "GPUs"),
 ]
 
 
@@ -83,15 +84,23 @@ def _copy(ad: classad.ClassAd) -> classad.ClassAd:
 
 
 def full_size(slot: classad.ClassAd) -> classad.ClassAd:
-    """A partitionable slot as if none of its resources were claimed, for "could this
-    machine ever run the job". A static slot is returned as it is."""
-    if not get(slot, "PartitionableSlot", False):
-        return slot
+    """The slot at its full size, from classads.slot_totals, for "could this machine ever
+    run the job": a partitionable slot as if none of its resources were claimed."""
     out = _copy(slot)
-    for attr, total, _, _ in RESOURCES:
-        if total in slot:
-            out[attr] = slot[total]
+    out.update(classads.slot_totals(slot))
     return out
+
+
+def fits(job: classad.ClassAd, sized: list[classad.ClassAd]) -> tuple[list[int], list[int]]:
+    """Indexes of the full-size slots that meet the job's requirements, and of those, the
+    ones that also accept the job (their START policy and resource limits)."""
+    meets = [i for i, slot in enumerate(sized) if slot.matches(job)]
+    return meets, [i for i in meets if job.matches(sized[i])]
+
+
+def largest(sized: list[classad.ClassAd]) -> dict[str, int]:
+    """The largest amount of each resource any full-size slot has."""
+    return {res: max((int(get(slot, res, 0) or 0) for slot in sized), default=0) for res in classads.SLOT_RESOURCES}
 
 
 def free_now(slot: classad.ClassAd) -> bool:
@@ -131,16 +140,14 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
                     "rules_out": sum(1 for slot in sized if not slot.matches(probe)),
                 }
             )
-    meets = [i for i, slot in enumerate(sized) if slot.matches(job)]
-    accepts = [i for i in meets if job.matches(sized[i])]
+    meets, accepts = fits(job, sized)
     now = [i for i in accepts if free_now(slots[i]) and slots[i].symmetricMatch(job)]
 
-    largest = {}
-    for attr, total, request, unit in RESOURCES:
-        wanted = get(job, request, 0) or 0
-        sizes = [get(slot, attr, 0) or 0 for slot in sized]
-        if wanted:
-            largest[attr.lower()] = {"requested": wanted, "largest_slot": max(sizes, default=0), "unit": unit}
+    biggest = largest(sized)
+    asks = {}
+    for attr, request, unit in RESOURCES:
+        if wanted := get(job, request, 0) or 0:
+            asks[attr.lower()] = {"requested": wanted, "largest_slot": biggest[attr], "unit": unit}
 
     stranded: dict[str, Any] = {}
     gpus = get(job, "RequestGPUs", 0) or 0
@@ -151,9 +158,7 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
             if (get(slot, "GPUs", 0) or 0) < gpus or not free_now(slot):
                 continue
             missing = [
-                unit
-                for attr, _, request, unit in RESOURCES[:3]
-                if (get(slot, attr, 0) or 0) < (get(job, request, 0) or 0)
+                unit for attr, request, unit in RESOURCES[:3] if (get(slot, attr, 0) or 0) < (get(job, request, 0) or 0)
             ]
             if missing:
                 short.append((slot, missing))
@@ -169,7 +174,7 @@ def match(job: classad.ClassAd, slots: list[classad.ClassAd]) -> dict[str, Any]:
         "accept_the_job": len(accepts),
         "free_now": len(now),
         "requirements": clauses,
-        "largest": largest,
+        "largest": asks,
         "stranded_gpus": stranded,
     }
 

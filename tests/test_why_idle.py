@@ -215,6 +215,27 @@ def _schedd_ad(**attrs):
     return ad
 
 
+def test_draft_submit_and_why_idle_size_slots_alike(monkeypatch):
+    """draft_submit's slot check and why_idle's match agree on which full-size slots fit."""
+    from condor_mcp import pool, submit
+
+    slots = [
+        slot("gpu1", 1, 2000, gpus=2, totals=(32, 64000, 4)),  # mostly claimed, but fits when empty
+        slot("cpu1", 64, 256000, partitionable=False, state="Claimed"),  # no GPU
+        slot("gpu2", 8, 16000, gpus=1, start='TARGET.Owner == "bob"'),  # refuses alice
+    ]
+    monkeypatch.setattr(pool, "query_slots", lambda projection, constraint=None: slots)
+    matched = diagnose.match(gpu_job(), slots)
+    checked = submit.slot_check(gpu_job())
+    assert (checked["fit_requirements"], checked["would_accept"]) == (2, 1)
+    assert (checked["fit_requirements"], checked["would_accept"]) == (
+        matched["meet_requirements"],
+        matched["accept_the_job"],
+    )
+    assert checked["largest_slot"] == {"cpus": 64, "memory_mb": 256000, "disk_mb": 10**7 // 1024, "gpus": 4}
+    assert matched["largest"]["gpus"]["largest_slot"] == 4
+
+
 def test_universe_reasons():
     def job(universe, **attrs):
         return classad.ClassAd({"JobUniverse": universe, **attrs})
