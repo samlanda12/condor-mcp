@@ -10,10 +10,18 @@ from htcondor2 import JobStatus
 from pydantic import Field
 
 from condor_mcp import classads, diagnose, pool
-from condor_mcp.app import READ_ONLY, ClusterField, mcp, no_slots, require_job
+from condor_mcp.app import (
+    READ_ONLY,
+    ClusterField,
+    mcp,
+    no_slots,
+    priority_row,
+    priority_table,
+    require_job,
+    submitter_name,
+)
 from condor_mcp.classads import get
 from condor_mcp.pool import log
-from condor_mcp.tools.pool import priority_row, priority_table, submitter_name
 
 
 def _not_idle(job: classad.ClassAd, in_queue: bool) -> dict[str, Any]:

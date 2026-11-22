@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from typing import Any, NamedTuple
+
+import classad2 as classad
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from condor_mcp import pool
+from condor_mcp import classads, pool
+from condor_mcp.classads import get
 
 mcp = FastMCP("condor-mcp")
 
@@ -43,3 +48,49 @@ def no_slots() -> str:
         "reporting or the slot filter (CONDOR_MCP_SLOT_CONSTRAINT = "
         f"{pool.settings.slot_constraint!r}) excludes everything."
     )
+
+
+def submitter_name(job: classad.ClassAd) -> str | None:
+    """The name the negotiator knows the job's user by: user@domain, or group.user@domain
+    for a job submitted under an accounting group."""
+    user, group = get(job, "User"), get(job, "AccountingGroup")
+    if user and group:
+        return f"{group}@{user.rsplit('@', 1)[-1]}"
+    return user
+
+
+class _PriorityTable(NamedTuple):
+    records: dict[str, classad.ClassAd]  # accountant ad by submitter name
+    jobs: dict[str, Counter[str]]  # idle, running and held jobs by submitter name
+    competing: set[str]  # submitters with idle jobs, the ones waiting for slots
+    read_at: float
+    warning: str | None  # the negotiator did not answer, so the records are older
+
+
+def priority_table() -> _PriorityTable:
+    """The negotiator's records for each submitter, joined with the submitter ads."""
+    ads, read_at, warning = pool.accountant_ads()
+    records = {get(ad, "Name"): ad for ad in ads if not get(ad, "IsAccountingGroup", False)}
+    jobs: dict[str, Counter[str]] = {}
+    for ad in pool.query_submitters():
+        counts = jobs.setdefault(get(ad, "Name"), Counter())
+        for key, attr in (("idle", "IdleJobs"), ("running", "RunningJobs"), ("held", "HeldJobs")):
+            counts[key] += int(get(ad, attr, 0) or 0)
+    competing = {user for user, counts in jobs.items() if counts["idle"]}
+    return _PriorityTable(records, jobs, competing, read_at, warning)
+
+
+def priority_row(user: str, table: _PriorityTable) -> dict[str, Any]:
+    """One user_priority row, with the user's place in line: 1 plus the users with idle
+    jobs and a better priority. A user with no record yet has the best priority."""
+
+    def priority(name: str) -> float:
+        return float(get(table.records[name], "Priority", 0)) if name in table.records else float("-inf")
+
+    row: dict[str, Any] = classads.priority_row(table.records[user]) if user in table.records else {"user": user}
+    if user not in table.records:
+        row["note"] = "The negotiator has no usage record yet, so this user starts at the best priority."
+    mine = priority(user)
+    row["rank"] = 1 + sum(1 for u in table.competing if u != user and priority(u) < mine)
+    row["jobs"] = {key: table.jobs.get(user, Counter())[key] for key in ("idle", "running", "held")}
+    return row
