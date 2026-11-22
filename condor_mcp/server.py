@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from condor_mcp.app import mcp
 
-# Each import registers that module's tools on mcp, and clients list them in this order
+# Each import registers that module's tools on mcp, and clients list them in this order.
 # isort: off
-from condor_mcp.tools import jobs, pool, diagnosis, submit, actions  # noqa: F401
+import condor_mcp.tools.jobs
+import condor_mcp.tools.pool
+import condor_mcp.tools.diagnosis
+import condor_mcp.tools.submit
+import condor_mcp.tools.actions  # noqa: F401
 # isort: on
 
 
