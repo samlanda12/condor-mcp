@@ -254,5 +254,8 @@ Code layout: [classads.py](condor_mcp/classads.py) turns ClassAds into dicts and
 holds the hold-code table, [pool.py](condor_mcp/pool.py) reads the settings, knows
 where the pool is and wraps connection errors, [worker.py](condor_mcp/worker.py) makes
 every call to a schedd or the collector in a child process so a daemon that never answers
-cannot hang the server, [submit.py](condor_mcp/submit.py) builds and checks submit files,
-[server.py](condor_mcp/server.py) defines the tools.
+cannot hang the server, [submit.py](condor_mcp/submit.py) builds and checks submit files, and
+[diagnose.py](condor_mcp/diagnose.py) matches an idle job against the slots. The tools
+live in [tools/](condor_mcp/tools), one module per area (jobs, pool, diagnosis, submit,
+actions), registered on the FastMCP instance in [app.py](condor_mcp/app.py);
+[server.py](condor_mcp/server.py) loads them and runs the server.

@@ -58,7 +58,7 @@ def test_no_pending_note_once_the_job_has_ended():
     """A completed job left in the queue is done, so a missing stdout is not on its way."""
     import classad2 as classad
 
-    from condor_mcp.server import _pending_output_note
+    from condor_mcp.tools.jobs import _pending_output_note
 
     ad = classad.ClassAd({"JobStatus": 4, "NumJobStarts": 1, "ShouldTransferFiles": "YES"})
     assert _pending_output_note(ad, "stdout", in_queue=True) is None
@@ -89,11 +89,10 @@ async def test_job_output_missing_job():
 
 
 async def test_job_output_refuses_another_users_job(finished_job, monkeypatch):
-    from condor_mcp import pool, server
+    from condor_mcp import pool
 
     as_other = pool.settings.model_copy(update={"user": "someone-else"})
     monkeypatch.setattr(pool, "settings", as_other)
-    monkeypatch.setattr(server, "settings", as_other)
     with pytest.raises(ToolError, match=f"Refusing to read the output of job {finished_job}.0"):
         await call("job_output", cluster_id=finished_job)
 
@@ -248,7 +247,7 @@ def test_find_job_refuses_an_id_queued_on_two_schedds(monkeypatch):
 
 def test_tail_of_one_long_line(tmp_path):
     """A last line longer than the cap comes back as its final MAX_OUTPUT_BYTES, marked cut."""
-    from condor_mcp.server import MAX_OUTPUT_BYTES, _tail
+    from condor_mcp.tools.jobs import MAX_OUTPUT_BYTES, _tail
 
     big = tmp_path / "big.out"
     big.write_text("x" * (2 * MAX_OUTPUT_BYTES) + "\n")
@@ -260,7 +259,7 @@ def test_tail_of_one_long_line(tmp_path):
 def test_tail_cut_at_a_line_start(tmp_path, tail, first):
     """Lines of 16 bytes put the 64 KB cut exactly at the start of line 904; a 4-byte
     last line moves it into line 904, which is then dropped as partial."""
-    from condor_mcp.server import MAX_OUTPUT_BYTES, _tail
+    from condor_mcp.tools.jobs import MAX_OUTPUT_BYTES, _tail
 
     f = tmp_path / "fixed.out"
     f.write_text("".join(f"{i:015d}\n" for i in range(5000)) + tail)
