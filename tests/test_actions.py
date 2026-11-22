@@ -98,11 +98,9 @@ async def test_act_on_missing_proc(fresh_job):
 
 async def test_act_refuses_another_users_job(fresh_job, monkeypatch):
     from condor_mcp import pool
-    from condor_mcp.tools import actions
 
     as_other = pool.settings.model_copy(update={"user": "someone-else"})
     monkeypatch.setattr(pool, "settings", as_other)
-    monkeypatch.setattr(actions, "settings", as_other)
     with pytest.raises(ToolError, match=f"Refusing to hold cluster {fresh_job}: it belongs to {ME}, not someone-else"):
         await call("hold_job", cluster_id=fresh_job, reason="not mine")
     with pytest.raises(ToolError, match="Refusing to release"):

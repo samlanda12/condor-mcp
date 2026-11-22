@@ -15,7 +15,7 @@ from pydantic import Field
 from condor_mcp import classads, pool
 from condor_mcp.app import READ_ONLY, ClusterField, OwnerField, job_projection, mcp, require_job
 from condor_mcp.classads import get
-from condor_mcp.pool import log, settings
+from condor_mcp.pool import log
 
 JobStatusName = Literal["idle", "running", "held", "completed", "removed", "suspended", "transferring_output"]
 
@@ -32,7 +32,7 @@ def job_details(
     has left the queue is read from the schedd history, and in_queue is false."""
     log.info("job_details cluster_id=%s proc_id=%s", cluster_id, proc_id)
     schedd, ad, in_queue, warnings = require_job(cluster_id, proc_id, job_projection(classads.JOB_PROJECTION))
-    summary = classads.summarize_job(ad, settings.job_attrs)
+    summary = classads.summarize_job(ad, pool.settings.job_attrs)
     summary["in_queue"] = in_queue
     if warnings:
         summary["warnings"] = warnings
@@ -67,8 +67,8 @@ def list_jobs(
     rows = []
     for schedd, ad in found[:limit]:
         row = classads.compact_job(ad)
-        if settings.job_attrs:
-            row["site"] = classads.site_attrs(ad, settings.job_attrs)
+        if pool.settings.job_attrs:
+            row["site"] = classads.site_attrs(ad, pool.settings.job_attrs)
         rows.append(pool.tag_schedd(row, schedd))
     matching = counts[status] if status else sum(counts.values())
     out: dict[str, Any] = {
@@ -104,8 +104,8 @@ def hold_reasons(owner: Annotated[str, OwnerField] = "me") -> dict[str, Any]:
     rows = []
     for schedd, ad in found:
         row = classads.held_job(ad)
-        if settings.job_attrs:
-            row["site"] = classads.site_attrs(ad, settings.job_attrs)
+        if pool.settings.job_attrs:
+            row["site"] = classads.site_attrs(ad, pool.settings.job_attrs)
         rows.append(pool.tag_schedd(row, schedd))
     tally = Counter(row["code"] for row in rows)
     out = {
@@ -148,8 +148,8 @@ def job_history(
     rows = []
     for schedd, ad in found[:limit]:
         row = classads.finished_job(ad)
-        if settings.job_attrs:
-            row["site"] = classads.site_attrs(ad, settings.job_attrs)
+        if pool.settings.job_attrs:
+            row["site"] = classads.site_attrs(ad, pool.settings.job_attrs)
         rows.append(pool.tag_schedd(row, schedd))
     out: dict[str, Any] = {"owner": name or "all", "jobs": rows, "truncated": len(found) > limit}
     if not rows:
@@ -235,10 +235,10 @@ def job_output(
     log.info("job_output cluster_id=%s proc_id=%s which=%s tail_lines=%s", cluster_id, proc_id, which, tail_lines)
     schedd, ad, in_queue, warnings = require_job(cluster_id, proc_id, classads.OUTPUT_PROJECTION)
 
-    if get(ad, "Owner") != settings.user:
+    if get(ad, "Owner") != pool.settings.user:
         raise ToolError(
             f"Refusing to read the output of job {cluster_id}.{proc_id}: it belongs to "
-            f"{get(ad, 'Owner') or '<no owner>'}, not {settings.user}. This server only reads "
+            f"{get(ad, 'Owner') or '<no owner>'}, not {pool.settings.user}. This server only reads "
             "output of jobs owned by the user it runs as (CONDOR_MCP_USER)."
         )
     attr, command = classads.OUTPUT_FILES[which]

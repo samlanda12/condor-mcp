@@ -12,7 +12,7 @@ from pydantic import Field
 from condor_mcp import classads, pool
 from condor_mcp.app import READ_ONLY, OwnerField, mcp, no_slots
 from condor_mcp.classads import get
-from condor_mcp.pool import log, settings
+from condor_mcp.pool import log
 
 
 @mcp.tool(annotations=READ_ONLY, tags={"pool", "read-only"})
@@ -32,7 +32,7 @@ def pool_status(
     one claimed slot per running job. Which slots count is set by the server's
     slot filter."""
     log.info("pool_status detail=%s", detail)
-    projection = classads.SLOT_PROJECTION + [a for a in settings.slot_attrs if a not in classads.SLOT_PROJECTION]
+    projection = classads.SLOT_PROJECTION + [a for a in pool.settings.slot_attrs if a not in classads.SLOT_PROJECTION]
     ads = pool.query_slots(projection)
     if not ads:
         raise ToolError(no_slots())
@@ -74,8 +74,8 @@ def pool_status(
             largest = {"machine": get(ad, "Machine"), "free_cpus": free_c, "machine_cpus": total_c}
 
     out = {
-        "collector": settings.collector or "from HTCondor config",
-        "slot_filter": settings.slot_constraint,
+        "collector": pool.settings.collector or "from HTCondor config",
+        "slot_filter": pool.settings.slot_constraint,
         "machines": len(machines),
         "slots": {"total": len(ads), "by_state": dict(by_state)},
         "cpus": cpus,
@@ -88,7 +88,7 @@ def pool_status(
     except ToolError as exc:  # the slots are still worth returning
         out["warnings"] = [str(exc)]
     if detail:
-        out["slot_list"] = [classads.summarize_slot(ad, settings.slot_attrs) for ad in ads]
+        out["slot_list"] = [classads.summarize_slot(ad, pool.settings.slot_attrs) for ad in ads]
     log.info("  -> %d slots, %d/%d cpus free", len(ads), cpus["available"], cpus["total"])
     return out
 

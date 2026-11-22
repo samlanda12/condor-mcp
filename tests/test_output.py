@@ -90,11 +90,9 @@ async def test_job_output_missing_job():
 
 async def test_job_output_refuses_another_users_job(finished_job, monkeypatch):
     from condor_mcp import pool
-    from condor_mcp.tools import jobs
 
     as_other = pool.settings.model_copy(update={"user": "someone-else"})
     monkeypatch.setattr(pool, "settings", as_other)
-    monkeypatch.setattr(jobs, "settings", as_other)
     with pytest.raises(ToolError, match=f"Refusing to read the output of job {finished_job}.0"):
         await call("job_output", cluster_id=finished_job)
 

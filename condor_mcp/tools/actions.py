@@ -13,7 +13,7 @@ from pydantic import Field
 from condor_mcp import classads, pool, worker
 from condor_mcp.app import ACT, DESTRUCTIVE, ClusterField, mcp
 from condor_mcp.classads import get
-from condor_mcp.pool import log, settings
+from condor_mcp.pool import log
 from condor_mcp.worker import NoAnswer
 
 ProcField = Field(ge=0, description="Process number within the cluster. Omit to act on every job in the cluster.")
@@ -75,10 +75,10 @@ def _act(
             f"{title} exists on more than one schedd ({', '.join(names)}), "
             "so the ID is ambiguous. Set CONDOR_MCP_SCHEDDS to the one that holds the job."
         )
-    others = sorted({get(ad, "Owner") or "<no owner>" for _, ad in found} - {settings.user})
+    others = sorted({get(ad, "Owner") or "<no owner>" for _, ad in found} - {pool.settings.user})
     if others:
         raise ToolError(
-            f"Refusing to {verb} {label}: it belongs to {', '.join(others)}, not {settings.user}. "
+            f"Refusing to {verb} {label}: it belongs to {', '.join(others)}, not {pool.settings.user}. "
             "This server only acts on jobs owned by the user it runs as (CONDOR_MCP_USER)."
         )
     (name,) = names

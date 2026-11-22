@@ -12,7 +12,7 @@ from pydantic import Field
 from condor_mcp import classads, diagnose, pool
 from condor_mcp.app import READ_ONLY, ClusterField, mcp, no_slots, require_job
 from condor_mcp.classads import get
-from condor_mcp.pool import log, settings
+from condor_mcp.pool import log
 from condor_mcp.tools.pool import priority_row, priority_table, submitter_name
 
 
@@ -63,7 +63,7 @@ def why_idle(
     schedd_ad, schedd = None, None
     try:
         ads = pool.schedd_ads()
-        name, schedd_ad = (found.schedd, ads.get(found.schedd)) if settings.schedds else next(iter(ads.items()))
+        name, schedd_ad = (found.schedd, ads.get(found.schedd)) if pool.settings.schedds else next(iter(ads.items()))
         schedd = classads.schedd_health(name, schedd_ad)
     except ToolError as exc:
         warnings.append(str(exc))
@@ -101,7 +101,7 @@ def why_idle(
     out.update(
         {
             "reasons": reasons,
-            "slot_filter": settings.slot_constraint,
+            "slot_filter": pool.settings.slot_constraint,
             **matched,
             "schedd_health": schedd,
             "priority": priority,

@@ -7,7 +7,6 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from condor_mcp import pool
-from condor_mcp.pool import settings
 
 mcp = FastMCP("condor-mcp")
 
@@ -24,7 +23,7 @@ ClusterField = Field(ge=1, description="Cluster number, the part before the dot 
 
 
 def job_projection(base: list[str]) -> list[str]:
-    return base + [a for a in settings.job_attrs if a not in base]
+    return base + [a for a in pool.settings.job_attrs if a not in base]
 
 
 def require_job(cluster_id: int, proc_id: int, projection: list[str]) -> pool.FoundJob:
@@ -42,5 +41,5 @@ def no_slots() -> str:
     return (
         "The collector returned no slots. Either no execute machines are "
         "reporting or the slot filter (CONDOR_MCP_SLOT_CONSTRAINT = "
-        f"{settings.slot_constraint!r}) excludes everything."
+        f"{pool.settings.slot_constraint!r}) excludes everything."
     )

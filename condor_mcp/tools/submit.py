@@ -11,7 +11,7 @@ from pydantic import Field
 from condor_mcp import classads, pool, submit, worker
 from condor_mcp.app import READ_ONLY, WRITE, mcp, no_slots
 from condor_mcp.classads import get
-from condor_mcp.pool import CONDOR_ERRORS, log, settings
+from condor_mcp.pool import CONDOR_ERRORS, log
 from condor_mcp.worker import NoAnswer
 
 
@@ -61,7 +61,7 @@ def draft_submit(
     stdout and stderr land there named after the job id, and relative paths
     are taken relative to it."""
     log.info("draft_submit executable=%s queue=%s", executable, queue)
-    workdir = settings.workdir
+    workdir = pool.settings.workdir
     executable = submit.resolve(executable, workdir)
     input_files = [submit.resolve(f, workdir) for f in input_files or []]
     text = submit.compose(
@@ -161,10 +161,10 @@ def submit_job(
     description = htcondor.Submit(text)
     if file_dir is None:
         try:
-            settings.workdir.mkdir(parents=True, exist_ok=True)
+            pool.settings.workdir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise ToolError(f"Could not create the work directory {settings.workdir}: {exc}") from exc
-    default_dir = file_dir or settings.workdir
+            raise ToolError(f"Could not create the work directory {pool.settings.workdir}: {exc}") from exc
+    default_dir = file_dir or pool.settings.workdir
     base = submit.prepare(description, default_dir)
     # The original text still has a relative initialdir, so run from where condor_submit would.
     ads, warnings = submit.dry_run(text, cwd=default_dir)
