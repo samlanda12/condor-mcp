@@ -178,8 +178,16 @@ def collector_query(
     return htcondor.Collector(pool).query(ad_type, constraint=constraint, projection=projection)
 
 
-def collector_locate(pool: str | None, daemon_type: htcondor.DaemonType, name: str) -> classad.ClassAd | None:
+def collector_locate(pool: str | None, daemon_type: htcondor.DaemonType, name: str | None) -> classad.ClassAd | None:
+    if name is None:  # the pool's only daemon of that type, such as its negotiator
+        return htcondor.Collector(pool).locate(daemon_type)
     return htcondor.Collector(pool).locate(daemon_type, name)
+
+
+def negotiator_priorities(location: classad.ClassAd | None) -> list[classad.ClassAd]:
+    """The negotiator's accounting ads, one per submitter and one per accounting group.
+    None is the local config's negotiator."""
+    return htcondor.Negotiator(location).getPriorities(False)
 
 
 if __name__ == "__main__":

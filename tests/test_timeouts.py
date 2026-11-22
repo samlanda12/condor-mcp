@@ -152,6 +152,19 @@ async def test_queue_query_times_out(silent_schedd):
         await call("list_jobs")
 
 
+async def test_negotiator_query_times_out(monkeypatch, silent_ad):
+    from condor_mcp import pool
+
+    monkeypatch.setattr(pool, "settings", pool.settings.model_copy(update={"timeout": TIMEOUT}))
+    monkeypatch.setattr(pool, "locate_negotiator", lambda: silent_ad)
+    with pytest.raises(ToolError, match=rf"priorities from the negotiator: no answer within {TIMEOUT} s"):
+        await call("user_priority")
+    start = time.monotonic()  # the failure is remembered, so the next call does not wait again
+    with pytest.raises(ToolError, match=rf"priorities from the negotiator: no answer within {TIMEOUT} s"):
+        await call("user_priority")
+    assert time.monotonic() - start < TIMEOUT
+
+
 async def test_reads_leave_out_a_schedd_that_does_not_answer(monkeypatch, silent_ad, live_jobs):
     """Each tool waits one timeout for the silent schedd, however many reads it makes."""
     import htcondor2 as htcondor

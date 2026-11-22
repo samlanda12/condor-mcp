@@ -20,7 +20,7 @@ import classad2 as classad
 import htcondor2 as htcondor
 from fastmcp.exceptions import ToolError
 
-from condor_mcp import classads, pool
+from condor_mcp import classads, diagnose, pool
 from condor_mcp.classads import get
 
 ITEM = "$(item)"
@@ -276,25 +276,16 @@ def dry_run_row(ad: classad.ClassAd) -> dict[str, Any]:
 
 
 def slot_check(job: classad.ClassAd) -> dict[str, Any]:
-    """Match the job against every non-dynamic slot sized to its total resources.
-    fit_requirements: slots the job's Requirements accept. would_accept: those
+    """Match the job against every non-dynamic slot at its full size, by the same rules as
+    why_idle. fit_requirements: slots the job's Requirements accept. would_accept: those
     whose START also accepts the job."""
-    slots = pool.query_slots([], constraint="DynamicSlot =!= true")
-    fit = accept = 0
-    largest = dict.fromkeys(classads.SLOT_RESOURCES, 0)
-    for slot in slots:
-        totals = classads.slot_totals(slot)
-        for res, total in totals.items():
-            largest[res] = max(largest[res], total)
-        slot.update(totals)  # sized in place; the ads are private to this call
-        if slot.matches(job):
-            fit += 1
-            if job.matches(slot):
-                accept += 1
+    slots = [diagnose.full_size(slot) for slot in pool.query_slots([], constraint="DynamicSlot =!= true")]
+    meets, accepts = diagnose.fits(job, slots)
+    largest = diagnose.largest(slots)
     return {
         "slots": len(slots),
-        "fit_requirements": fit,
-        "would_accept": accept,
+        "fit_requirements": len(meets),
+        "would_accept": len(accepts),
         "largest_slot": {
             "cpus": largest["Cpus"],
             "memory_mb": largest["Memory"],

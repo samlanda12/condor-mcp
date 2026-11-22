@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import getpass
 import logging
+import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -51,7 +53,7 @@ class Settings(BaseSettings):
     # Where drafted jobs run from (their initialdir) and where their log,
     # stdout and stderr land.
     workdir: Path = Field(default_factory=lambda: Path.home() / "condor-mcp-jobs")
-    # Seconds to wait for a schedd or the collector before giving up on a call. Capped.
+    # Seconds to wait for a schedd, the collector or the negotiator before giving up on a call. Capped.
     timeout: float = Field(default=60, gt=0, le=3600)
 
     @field_validator("schedds", "job_attrs", "slot_attrs", mode="before")
@@ -250,7 +252,7 @@ def find_job(cluster_id: int, proc_id: int, projection: list[str]) -> FoundJob |
     with a warning that the ID could not be checked there. A job in no queue that answered
     fails instead, since the job may be on the schedd that did not."""
     constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
-    projection = [*projection, "QDate"]
+    projection = [*projection, "QDate"] if projection else []  # an empty projection is the whole ad
     in_queues, failed = query_jobs(constraint, projection, 1)
     found = [FoundJob(name, ad, True, []) for name, ad in in_queues]
     if not found:
@@ -299,6 +301,135 @@ def query_slots(projection: list[str], constraint: str | None = None) -> list[cl
             f"Could not reach the collector ({settings.collector or 'from HTCondor config'}): "
             f"{exc}. Is the pool up? Check with `condor_status`, and CONDOR_MCP_COLLECTOR if set."
         ) from exc
+
+
+SCHEDD_PROJECTION = [
+    "Name",
+    "RecentDaemonCoreDutyCycle",
+    "MaxJobsRunning",
+    "TotalRunningJobs",
+    "TotalIdleJobs",
+    "TotalHeldJobs",
+    # What scheduler- and local-universe jobs wait on, for why_idle
+    "StartSchedulerUniverse",
+    "TotalSchedulerJobsRunning",
+    "MaxRunningSchedulerJobsPerOwner",
+    "StartLocalUniverse",
+    "TotalLocalJobsRunning",
+    "MaxRunningLocalJobsPerOwner",
+]
+
+
+def schedd_ads() -> dict[str, classad.ClassAd | None]:
+    """Each configured schedd's ad from the collector, or the local schedd's, by name.
+    A configured schedd the collector has no ad for maps to None."""
+    try:
+        if settings.schedds:
+            names = settings.schedds
+        else:
+            # The schedd htcondor.Schedd() talks to. Collector.locate with no name finds it
+            # only through the local config; through a named collector it returns the first
+            # schedd ad, and only the attributes needed to contact it.
+            local = call(worker.collector_locate, None, htcondor.DaemonType.Schedd, None)
+            if local is None:
+                return {"local": None}
+            names = [get(local, "Name")]
+        constraint = " || ".join(f"Name == {classad.quote(name)}" for name in names)
+        ads = call(worker.collector_query, settings.collector, htcondor.AdType.Schedd, constraint, SCHEDD_PROJECTION)
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not read the schedd ads from the collector ({settings.collector or 'from HTCondor config'}): {exc}."
+        ) from exc
+    found = {str(get(ad, "Name")).lower(): ad for ad in ads}  # the collector matches Name ignoring case
+    return {name: found.get(name.lower()) for name in names}
+
+
+def query_submitters() -> list[classad.ClassAd]:
+    """Submitter ads from the collector: one per user and schedd with jobs in that queue
+    now, with the user's idle, running and held counts there."""
+    try:
+        return call(
+            worker.collector_query,
+            settings.collector,
+            htcondor.AdType.Submitter,
+            "True",
+            ["Name", "IdleJobs", "RunningJobs", "HeldJobs"],
+        )
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not reach the collector ({settings.collector or 'from HTCondor config'}): "
+            f"{exc}. Is the pool up? Check with `condor_status`, and CONDOR_MCP_COLLECTOR if set."
+        ) from exc
+
+
+def locate_negotiator() -> classad.ClassAd | None:
+    """The configured collector's negotiator, or None for the local config's. A configured
+    collector with no negotiator ad fails rather than fall back to the local config, which
+    may be another pool's."""
+    if not settings.collector:
+        return None
+    try:
+        ad = call(worker.collector_locate, settings.collector, htcondor.DaemonType.Negotiator, None)
+    except CONDOR_ERRORS as exc:
+        raise ToolError(
+            f"Could not find the negotiator through the collector ({settings.collector}): {exc}. "
+            "Check CONDOR_MCP_COLLECTOR."
+        ) from exc
+    if ad is None:
+        raise ToolError(
+            f"The collector ({settings.collector}) has no negotiator ad, so the negotiator may be "
+            "down or restarting. Check with `condor_status -negotiator`."
+        )
+    return ad
+
+
+# The negotiator updates priorities once per negotiation cycle and answers no queries while
+# it negotiates, which on a busy pool can take minutes, so its answer is kept this long.
+PRIORITY_MAX_AGE = 300
+# After a failed read, callers get the same failure (or the last answer) for this long
+# instead of each waiting out the timeout again.
+PRIORITY_RETRY_AFTER = 60
+_priorities: tuple[float, list[classad.ClassAd]] | None = None
+_priority_error: tuple[float, str] | None = None
+_priorities_lock = threading.Lock()
+
+
+class Priorities(NamedTuple):
+    ads: list[classad.ClassAd]
+    read_at: float  # time.time() of the read
+    warning: str | None  # set when the latest read failed and these ads are older
+
+
+def accountant_ads() -> Priorities:
+    """The negotiator's accounting ads, read at most PRIORITY_MAX_AGE seconds ago. Callers
+    wait on one read rather than each making one. When a refresh fails, the last answer
+    is served with a warning; with no answer to serve, the failure is raised. Either way
+    the failure is remembered for PRIORITY_RETRY_AFTER seconds."""
+    global _priorities, _priority_error
+    with _priorities_lock:
+        now = time.time()
+        stale = _priorities is None or now - _priorities[0] > PRIORITY_MAX_AGE
+        if stale and (_priority_error is None or now - _priority_error[0] > PRIORITY_RETRY_AFTER):
+            try:
+                ads = call(worker.negotiator_priorities, locate_negotiator())
+                _priorities, _priority_error = (time.time(), ads), None
+            except ToolError as exc:
+                _priority_error = (time.time(), str(exc))
+            except CONDOR_ERRORS as exc:
+                _priority_error = (
+                    time.time(),
+                    (
+                        f"Could not get user priorities from the negotiator: {exc}. Is it up? "
+                        "Check with `condor_userprio`, and CONDOR_MCP_COLLECTOR if set."
+                    ),
+                )
+        if _priorities is None:
+            assert _priority_error is not None
+            raise ToolError(_priority_error[1])
+        warning = None
+        if _priority_error is not None:  # a success clears it, so these ads predate the failure
+            warning = f"{_priority_error[1]} The priorities shown are the last answer, from as_of."
+        return Priorities(_priorities[1], _priorities[0], warning)
 
 
 def owner_constraint(owner: str) -> tuple[str, str | None]:
