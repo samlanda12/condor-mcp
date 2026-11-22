@@ -118,11 +118,11 @@ async def test_draft_impossible_request():
 
 
 async def test_draft_with_empty_pool(monkeypatch):
-    from condor_mcp import pool, server
+    from condor_mcp import app, pool
 
     narrowed = pool.settings.model_copy(update={"slot_constraint": "False"})
     monkeypatch.setattr(pool, "settings", narrowed)
-    monkeypatch.setattr(server, "settings", narrowed)
+    monkeypatch.setattr(app, "settings", narrowed)
     out = await call("draft_submit", executable="/bin/sleep", memory_mb=64)
     assert out["submittable"] is True and out["slots"]["slots"] == 0
     (warning,) = out["warnings"]
