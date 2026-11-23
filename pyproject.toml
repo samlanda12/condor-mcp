@@ -2,6 +2,7 @@
 name = "condor-mcp"
 version = "0.1.0"
 description = "MCP server that puts an HTCondor pool behind a natural-language interface"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=4",

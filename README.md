@@ -259,3 +259,7 @@ cannot hang the server, [submit.py](condor_mcp/submit.py) builds and checks subm
 live in [tools/](condor_mcp/tools), one module per area (jobs, pool, diagnosis, submit,
 actions), registered on the FastMCP instance in [app.py](condor_mcp/app.py);
 [server.py](condor_mcp/server.py) loads them and runs the server.
+
+## License
+
+Copyright 2026 Sam Landa. Licensed under the [Apache License 2.0](LICENSE).
