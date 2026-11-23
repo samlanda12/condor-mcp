@@ -262,4 +262,4 @@ actions), registered on the FastMCP instance in [app.py](condor_mcp/app.py);
 
 ## License
 
-Copyright 2026 Sam Landa. Licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).
